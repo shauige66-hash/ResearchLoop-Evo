@@ -6,7 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .paper import EvidenceSource, FieldEvidence, KeywordUsed, Paper, SourceError
+from .paper import (
+    EXTRACTION_MODE,
+    EvidenceSource,
+    ExtractionMethod,
+    FieldEvidence,
+    KeywordUsed,
+    Paper,
+    SourceError,
+)
 
 DocumentType = Literal[
     "article",
@@ -109,12 +117,16 @@ class FieldPatch(BaseModel):
 class MatrixColumn(BaseModel):
     key: str
     label: str
+    kind: Literal["metadata", "extracted", "system_label"] = "extracted"
 
 
 class MatrixCell(BaseModel):
     paper_id: str
     column: str
-    evidence: FieldEvidence
+    # Bibliographic metadata and system labels are not abstract evidence, so they
+    # carry plain text instead of a FieldEvidence that would mislabel their origin.
+    evidence: FieldEvidence | None = None
+    text: str | None = None
     edited_at: str | None = None
 
 
@@ -128,10 +140,18 @@ class MatrixResponse(BaseModel):
     rows: list[MatrixRow]
     generated_at: str
     notice: str
+    extraction_mode: ExtractionMethod = EXTRACTION_MODE
+    filters_applied: dict = Field(default_factory=dict)
+    available_filters: dict = Field(default_factory=dict)
 
 
 class MatrixRequest(BaseModel):
     paper_ids: list[str] = Field(min_length=1, max_length=50)
+    method_class: str | None = None
+    dataset: str | None = None
+    metric: str | None = None
+    year_from: int | None = Field(default=None, ge=1900, le=2100)
+    year_to: int | None = Field(default=None, ge=1900, le=2100)
 
 
 class ReportRequest(BaseModel):
@@ -155,3 +175,4 @@ class ReportResponse(BaseModel):
     sections: list[ReportSection]
     markdown: str
     caveats: list[str]
+    extraction_mode: ExtractionMethod = EXTRACTION_MODE

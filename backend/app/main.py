@@ -13,9 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.routes_future import (
     router_evolve,
     router_experiments,
-    router_gaps,
     router_skills,
 )
+from .api.routes_gaps import router as gaps_router
 from .api.routes_literature import router as literature_router
 from .config import get_settings
 from .services.http import close_client
@@ -56,7 +56,7 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(literature_router)
-    app.include_router(router_gaps)
+    app.include_router(gaps_router)
     app.include_router(router_experiments)
     app.include_router(router_evolve)
     app.include_router(router_skills)

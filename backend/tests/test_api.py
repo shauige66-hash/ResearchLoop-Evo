@@ -53,7 +53,6 @@ def test_root():
 
 def test_future_endpoints_return_501():
     endpoints = [
-        "/api/gaps/discover",
         "/api/experiments/design",
         "/api/experiments/run",
         "/api/experiments/verify",
@@ -66,6 +65,24 @@ def test_future_endpoints_return_501():
         assert response.status_code == 501
         data = response.json()
         assert data["detail"]["status"] == "not_implemented"
+
+
+def test_gap_discover_rejects_single_paper():
+    """A gap may never be inferred from one paper's future work."""
+    response = client.post("/api/gaps/discover", json={"paper_ids": ["does-not-exist"]})
+    assert response.status_code == 400
+    assert "at least 2" in response.json()["detail"]
+
+
+def test_gap_discover_requires_a_selection():
+    response = client.post("/api/gaps/discover", json={})
+    assert response.status_code == 400
+
+
+def test_gap_list_is_empty_initially():
+    response = client.get("/api/gaps")
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
 
 
 @pytest.fixture

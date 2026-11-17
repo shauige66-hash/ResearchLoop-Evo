@@ -1,11 +1,35 @@
 import type {
+  MatrixFilters,
+  MatrixResponse,
   Paper,
   ReportResponse,
+  RunSummary,
   SearchResponse,
   TopicInput,
 } from "../types/paper";
+import type {
+  GapListResponse,
+  GapReview,
+  GapStatus,
+  ResearchGap,
+} from "../types/gap";
 
 const API_BASE = "/api";
+
+function describeError(detail: unknown, status: number): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d) => `${(d.loc || []).join(".")}: ${d.msg}`)
+      .join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    const obj = detail as Record<string, unknown>;
+    if (typeof obj.message === "string") return obj.message;
+    return JSON.stringify(obj);
+  }
+  return `HTTP ${status}`;
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -14,7 +38,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail?.message || error.detail || `HTTP ${response.status}`);
+    throw new Error(describeError(error.detail, response.status));
   }
   return response.json();
 }
@@ -66,10 +90,17 @@ export async function updatePaperField(
   });
 }
 
-export async function generateMatrix(paperIds: string[]): Promise<any> {
+export async function listRuns(): Promise<RunSummary[]> {
+  return request("/literature/runs");
+}
+
+export async function generateMatrix(
+  paperIds: string[],
+  filters: MatrixFilters = {}
+): Promise<MatrixResponse> {
   return request("/literature/matrix", {
     method: "POST",
-    body: JSON.stringify({ paper_ids: paperIds }),
+    body: JSON.stringify({ paper_ids: paperIds, ...filters }),
   });
 }
 
@@ -89,4 +120,58 @@ export async function generateReport(
 
 export async function healthCheck(): Promise<{ status: string; timestamp: string; version: string }> {
   return request("/health");
+}
+
+export async function discoverGaps(payload: {
+  run_id?: string;
+  paper_ids?: string[];
+  topic?: string;
+  run_counter_search?: boolean;
+  counter_top_k?: number;
+}): Promise<GapListResponse> {
+  return request("/gaps/discover", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listGaps(params?: {
+  run_id?: string;
+  status?: string;
+  gap_type?: string;
+}): Promise<GapListResponse> {
+  const searchParams = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value) searchParams.append(key, value);
+  });
+  return request(`/gaps?${searchParams.toString()}`);
+}
+
+export async function getGap(
+  gapId: string
+): Promise<{ gap: ResearchGap; reviews: GapReview[] }> {
+  return request(`/gaps/${gapId}`);
+}
+
+export async function reviewGap(
+  gapId: string,
+  payload: {
+    status: GapStatus;
+    human_note?: string;
+    title?: string;
+    description?: string;
+    unresolved_question?: string;
+  }
+): Promise<ResearchGap> {
+  return request(`/gaps/${gapId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function rerunCounterSearch(
+  gapId: string,
+  topK = 10
+): Promise<ResearchGap> {
+  return request(`/gaps/${gapId}/counter-search?top_k=${topK}`, { method: "POST" });
 }

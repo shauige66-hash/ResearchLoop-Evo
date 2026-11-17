@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { listPapers } from "../api/client";
 import type { Paper } from "../types/paper";
+import { EXTRACTED_FIELDS } from "../types/paper";
 
 export default function Library() {
   const [papers, setPapers] = useState<Paper[]>([]);
@@ -110,6 +111,11 @@ export default function Library() {
                       <span className="text-xs px-2 py-0.5 bg-slate-700 text-slate-300 rounded">
                         {paper.evidence_status}
                       </span>
+                      {paper.method_class && (
+                        <span className="text-xs px-2 py-0.5 bg-amber-900/40 text-amber-300 rounded">
+                          {paper.method_class} (system)
+                        </span>
+                      )}
                       {paper.citation_count !== null && (
                         <span className="text-xs px-2 py-0.5 bg-slate-700 text-slate-300 rounded">
                           {paper.citation_count} citations
@@ -186,19 +192,39 @@ export default function Library() {
                 </div>
               )}
               <div className="border-t border-slate-700 pt-3">
-                <strong>Extracted Fields:</strong>
+                <strong>Extracted Fields (Heuristic Mode · abstract only):</strong>
                 <div className="mt-2 space-y-2">
-                  {["method", "dataset", "findings", "limitations"].map((field) => {
-                    const evidence = selectedPaper[field as keyof Paper] as any;
-                    return evidence?.is_known ? (
+                  {EXTRACTED_FIELDS.map((field) => {
+                    const evidence = selectedPaper[field];
+                    const grounded = evidence.evidence_status === "grounded";
+                    return (
                       <div key={field} className="bg-slate-900/50 p-2 rounded">
-                        <div className="font-medium capitalize">{field}:</div>
-                        <div className="text-xs text-slate-400 mt-1">{evidence.value}</div>
-                        <div className="text-xs text-slate-500 mt-1">
-                          Source: {evidence.evidence_source} • Confidence: {evidence.confidence}
+                        <div className="font-medium text-slate-200">
+                          {field.replace(/_/g, " ")}
+                          {!grounded && (
+                            <span className="ml-2 text-xs text-slate-500">unknown</span>
+                          )}
                         </div>
+                        {grounded ? (
+                          <>
+                            <div className="text-xs text-slate-300 mt-1">{evidence.value}</div>
+                            {evidence.evidence_span && (
+                              <blockquote className="border-l-2 border-blue-700 pl-2 mt-1 text-xs text-slate-400 italic">
+                                “{evidence.evidence_span}”
+                              </blockquote>
+                            )}
+                            <div className="text-xs text-slate-500 mt-1">
+                              {evidence.evidence_source} · {evidence.extraction_method} ·{" "}
+                              {evidence.confidence}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="text-xs text-slate-500 mt-1">
+                            检索到的材料中未发现该字段的证据。
+                          </div>
+                        )}
                       </div>
-                    ) : null;
+                    );
                   })}
                 </div>
               </div>

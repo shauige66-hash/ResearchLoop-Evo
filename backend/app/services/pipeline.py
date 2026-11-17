@@ -21,6 +21,7 @@ from typing import Any
 
 from ..models.paper import KeywordUsed, Paper, SearchMeta, SourceError
 from ..models.schemas import SearchResponse, TopicInput
+from .classify import classify_method
 from .dedupe import dedupe
 from .extract import extract_from_abstract
 from .http import HttpFailure, get_client
@@ -210,9 +211,10 @@ async def search_pipeline(topic: TopicInput) -> SearchResponse:
     # Truncate to top_k
     ranked_papers = ranked_papers[: topic.top_k]
 
-    # Extract (heuristic from abstract)
+    # Extract (heuristic from abstract) and classify method for matrix grouping
     for paper in ranked_papers:
         extract_from_abstract(paper)
+        paper.method_class = classify_method(paper)
         paper.run_id = run_id
 
     # Build meta

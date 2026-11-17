@@ -25,19 +25,6 @@ def _not_implemented(phase: int, description: str) -> dict:
     )
 
 
-router_gaps = APIRouter(prefix="/api/gaps", tags=["gaps"])
-
-
-@router_gaps.post("/discover")
-async def discover_gaps():
-    return _not_implemented(2, "Research Gap discovery requires Phase 1 to be stable")
-
-
-@router_gaps.get("/{gap_id}")
-async def get_gap(gap_id: str):
-    return _not_implemented(2, "Research Gap retrieval")
-
-
 router_experiments = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
 

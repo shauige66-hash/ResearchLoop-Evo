@@ -16,6 +16,7 @@ from typing import Literal
 
 from ..models.paper import EXTRACTED_FIELDS, Paper
 from ..models.schemas import ReportResponse, ReportSection
+from .classify import classify_method
 
 
 def _group_by_field(papers: list[Paper], field: str) -> list[tuple[str, list[Paper]]]:
@@ -42,9 +43,10 @@ def _section_overview(papers: list[Paper], topic: str) -> ReportSection:
     years = [p.publication_year for p in papers if p.publication_year]
     year_range = f"{min(years)}–{max(years)}" if years else "unknown"
 
+    review_pct = f"{reviews / total * 100:.1f}%" if total else "n/a"
     paragraphs = [
         f"This report covers {total} papers related to '{topic}', spanning {year_range}.",
-        f"Among them, {reviews} are review papers ({reviews/total*100:.1f}% if total else 0).",
+        f"Among them, {reviews} are review papers ({review_pct}).",
         f"The papers come from {len(set(p.source for p in papers))} sources: {', '.join(sorted(set(p.source for p in papers)))}.",
     ]
 
@@ -64,11 +66,18 @@ def _section_categories(papers: list[Paper]) -> ReportSection:
 
     paragraphs = []
     if venue_groups:
-        top_venues = venue_groups[:5]
-        paragraphs.append(f"Top venues: {', '.join(f'{v} ({n})' for v, (_, n) in zip([g[0] for g in top_venues], top_venues))}.")
+        paragraphs.append(
+            "Top venues: "
+            + ", ".join(f"{venue} ({len(group)})" for venue, group in venue_groups[:5])
+            + "."
+        )
 
     if type_groups:
-        paragraphs.append(f"Document types: {', '.join(f'{t} ({n})' for t, (_, n) in zip([g[0] for g in type_groups], type_groups))}.")
+        paragraphs.append(
+            "Document types: "
+            + ", ".join(f"{dtype} ({len(group)})" for dtype, group in type_groups[:8])
+            + "."
+        )
 
     if not paragraphs:
         paragraphs.append("No clear categorization available from metadata.")
@@ -85,7 +94,11 @@ def _section_categories(papers: list[Paper]) -> ReportSection:
 def _section_representative(papers: list[Paper]) -> ReportSection:
     """Section 3: Representative papers (top 5 by relevance/citations)."""
     # Sort by citation count (desc), then relevance (desc)
-    sorted_papers = sorted(papers, key=lambda p: (p.citation_count or 0, p.relevance_score), reverse=True)
+    sorted_papers = sorted(
+        papers,
+        key=lambda p: (p.citation_count or 0, p.relevance_score or 0.0),
+        reverse=True,
+    )
     top5 = sorted_papers[:5]
 
     paragraphs = []
@@ -107,7 +120,7 @@ def _section_representative(papers: list[Paper]) -> ReportSection:
 
 
 def _section_methods(papers: list[Paper]) -> ReportSection:
-    """Section 4: Method comparison."""
+    """Section 4: Method comparison, grouped by the system's method class."""
     method_papers = [p for p in papers if p.method.is_known]
     if not method_papers:
         return ReportSection(
@@ -118,21 +131,26 @@ def _section_methods(papers: list[Paper]) -> ReportSection:
             paper_ids=[],
         )
 
-    # Group by method keywords (simple: first 5 words of method value)
     method_groups: dict[str, list[Paper]] = {}
     for paper in method_papers:
-        method_text = paper.method.value or ""
-        key = " ".join(method_text.split()[:5]) if method_text else "unknown"
+        key = paper.method_class or classify_method(paper)
         method_groups.setdefault(key, []).append(paper)
 
-    paragraphs = []
-    for method, group in sorted(method_groups.items(), key=lambda x: len(x[1]), reverse=True)[:5]:
-        paragraphs.append(f"**{method}**: {len(group)} paper(s) {_format_citations([p.paper_id for p in group[:3]])}.")
+    paragraphs = [
+        "Grouping uses a system-assigned method class (heuristic), not a label claimed "
+        "by the authors. The quoted method text below comes from the abstracts.",
+    ]
+    for label, group in sorted(method_groups.items(), key=lambda x: len(x[1]), reverse=True)[:6]:
+        example = group[0].method.value or ""
+        paragraphs.append(
+            f"**{label}** — {len(group)} paper(s) {_format_citations([p.paper_id for p in group[:3]])}. "
+            f"Example: {example[:160]}"
+        )
 
     return ReportSection(
         id="methods",
         title="4. 方法比较 / Method Comparison",
-        kind="facts",
+        kind="mixed",
         paragraphs=paragraphs,
         paper_ids=[p.paper_id for p in method_papers[:10]],
     )
@@ -250,10 +268,12 @@ def generate_report(papers: list[Paper], topic: str) -> ReportResponse:
 
     # Caveats
     caveats = [
-        "Phase 1 extracts from metadata and abstracts only. No full text was read.",
+        "Extraction ran in Heuristic Mode (cue-word matching). No LLM provider was used.",
+        "Only metadata and abstracts were read. No full text was retrieved.",
         "Fields marked 'unknown' were not found in retrieved material.",
         "System inferences (Section 7) are deductions, not verified conclusions.",
         "Author claims (Sections 5-6) are quoted from abstracts, not independently verified.",
+        "Method classes (Section 4) are system labels, not author claims.",
     ]
 
     return ReportResponse(

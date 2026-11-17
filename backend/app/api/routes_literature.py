@@ -23,12 +23,17 @@ from fastapi.responses import Response
 from ..models.paper import FieldEvidence
 from ..models.schemas import (
     FieldPatch,
+    MatrixCell,
+    MatrixColumn,
     MatrixRequest,
+    MatrixResponse,
+    MatrixRow,
     PaperListResponse,
     ReportRequest,
     SearchResponse,
     TopicInput,
 )
+from ..services.classify import classify_method
 from ..services.export import export_matrix
 from ..services.pipeline import search_pipeline
 from ..services.report import generate_report
@@ -123,6 +128,7 @@ async def update_paper_field(paper_id: str, field: str, patch: FieldPatch):
         evidence_source=patch.evidence_source,
         evidence_span=patch.evidence_span,
         confidence="high" if patch.evidence_source == "manual" else "medium",
+        extraction_method="manual",
         updated_at=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -133,58 +139,109 @@ async def update_paper_field(paper_id: str, field: str, patch: FieldPatch):
     return paper
 
 
+MATRIX_COLUMNS = [
+    MatrixColumn(key="paper_id", label="Paper ID", kind="metadata"),
+    MatrixColumn(key="title", label="Title", kind="metadata"),
+    MatrixColumn(key="publication_year", label="Year", kind="metadata"),
+    MatrixColumn(key="method_class", label="Method Class (system)", kind="system_label"),
+    MatrixColumn(key="research_problem", label="Research Problem"),
+    MatrixColumn(key="method", label="Method"),
+    MatrixColumn(key="agent_architecture", label="Agent Architecture"),
+    MatrixColumn(key="memory_strategy", label="Memory Strategy"),
+    MatrixColumn(key="skill_strategy", label="Skill Strategy"),
+    MatrixColumn(key="dataset", label="Dataset"),
+    MatrixColumn(key="evaluation_metrics", label="Evaluation Metrics"),
+    MatrixColumn(key="findings", label="Findings"),
+    MatrixColumn(key="limitations", label="Limitations"),
+    MatrixColumn(key="future_work", label="Future Work"),
+]
+
+
+def _apply_matrix_filters(papers: list, request: MatrixRequest) -> list:
+    kept = []
+    for paper in papers:
+        if request.method_class and (paper.method_class or "") != request.method_class:
+            continue
+        if request.dataset:
+            value = (paper.dataset.value or "").lower()
+            if request.dataset.lower() not in value:
+                continue
+        if request.metric:
+            value = (paper.evaluation_metrics.value or "").lower()
+            if request.metric.lower() not in value:
+                continue
+        if request.year_from and (paper.publication_year or 0) < request.year_from:
+            continue
+        if request.year_to and (paper.publication_year or 9999) > request.year_to:
+            continue
+        kept.append(paper)
+    return kept
+
+
 @router.post("/matrix")
 async def generate_matrix(request: MatrixRequest):
-    """Generate a comparison matrix for selected papers."""
+    """Generate a comparison matrix for selected papers, with optional filters."""
     store = get_store()
-    papers = []
-    for pid in request.paper_ids:
-        paper = store.get_paper(pid)
-        if paper:
-            papers.append(paper)
-
+    papers = [p for p in (store.get_paper(pid) for pid in request.paper_ids) if p]
     if not papers:
         raise HTTPException(status_code=404, detail="no papers found")
 
-    # Build matrix rows
-    from ..models.schemas import MatrixCell, MatrixColumn, MatrixResponse, MatrixRow
+    for paper in papers:
+        if not paper.method_class:
+            paper.method_class = classify_method(paper)
 
-    columns = [
-        MatrixColumn(key="paper_id", label="Paper ID"),
-        MatrixColumn(key="title", label="Title"),
-        MatrixColumn(key="research_problem", label="Research Problem"),
-        MatrixColumn(key="method", label="Method"),
-        MatrixColumn(key="dataset", label="Dataset"),
-        MatrixColumn(key="evaluation_metrics", label="Evaluation Metrics"),
-        MatrixColumn(key="findings", label="Findings"),
-        MatrixColumn(key="limitations", label="Limitations"),
-    ]
+    available_filters = {
+        "method_class": sorted({p.method_class for p in papers if p.method_class}),
+        "year_range": [
+            min((p.publication_year for p in papers if p.publication_year), default=None),
+            max((p.publication_year for p in papers if p.publication_year), default=None),
+        ],
+    }
+    filters_applied = {
+        key: value
+        for key, value in {
+            "method_class": request.method_class,
+            "dataset": request.dataset,
+            "metric": request.metric,
+            "year_from": request.year_from,
+            "year_to": request.year_to,
+        }.items()
+        if value is not None
+    }
+    papers = _apply_matrix_filters(papers, request)
+    if not papers:
+        raise HTTPException(status_code=404, detail="no papers match the selected filters")
 
     rows = []
     for paper in papers:
         cells = {}
-        for col in columns:
-            if col.key in ("paper_id", "title"):
+        for col in MATRIX_COLUMNS:
+            if col.kind == "extracted":
+                cells[col.key] = MatrixCell(
+                    paper_id=paper.paper_id,
+                    column=col.key,
+                    evidence=getattr(paper, col.key),
+                )
+            else:
                 value = getattr(paper, col.key)
                 cells[col.key] = MatrixCell(
                     paper_id=paper.paper_id,
                     column=col.key,
-                    evidence=FieldEvidence(value=value, evidence_source="abstract", confidence="high"),
-                )
-            else:
-                evidence = getattr(paper, col.key)
-                cells[col.key] = MatrixCell(
-                    paper_id=paper.paper_id,
-                    column=col.key,
-                    evidence=evidence,
+                    text="" if value is None else str(value),
                 )
         rows.append(MatrixRow(paper=paper, cells=cells))
 
     return MatrixResponse(
-        columns=columns,
+        columns=MATRIX_COLUMNS,
         rows=rows,
         generated_at=datetime.now(timezone.utc).isoformat(),
-        notice="Matrix generated from extracted fields. Click cells to view evidence.",
+        notice=(
+            "Extracted cells come from retrieved abstracts only (heuristic mode); no full "
+            "text was read. 'Method Class (system)' is a system label, not an author claim. "
+            "— means no evidence was found in the retrieved material."
+        ),
+        filters_applied=filters_applied,
+        available_filters=available_filters,
     )
 
 
@@ -237,7 +294,12 @@ async def generate_report_endpoint(request: ReportRequest):
     if not papers:
         raise HTTPException(status_code=404, detail="no papers found")
 
-    topic = papers[0].title.split(":")[0] if papers else "Literature Review"
+    topic = "Literature Review"
+    if request.run_id:
+        for run in store.list_runs():
+            if run["id"] == request.run_id:
+                topic = run["topic"]
+                break
     return generate_report(papers, topic)
 
 

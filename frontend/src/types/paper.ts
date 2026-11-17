@@ -1,11 +1,30 @@
+export type ExtractionMode = "heuristic" | "llm" | "manual" | "none";
+
 export interface FieldEvidence {
   value: string | null;
   evidence_source: "abstract" | "fulltext" | "manual" | "model_inference" | "none";
   evidence_span: string | null;
   source_url: string | null;
   confidence: "high" | "medium" | "low" | "unknown";
+  extraction_method: ExtractionMode;
+  evidence_status: "grounded" | "unknown";
   updated_at: string | null;
 }
+
+export const EXTRACTED_FIELDS = [
+  "research_problem",
+  "method",
+  "agent_architecture",
+  "memory_strategy",
+  "skill_strategy",
+  "dataset",
+  "evaluation_metrics",
+  "findings",
+  "limitations",
+  "future_work",
+] as const;
+
+export type ExtractedField = (typeof EXTRACTED_FIELDS)[number];
 
 export interface Paper {
   paper_id: string;
@@ -17,11 +36,15 @@ export interface Paper {
   abstract: string | null;
   research_problem: FieldEvidence;
   method: FieldEvidence;
+  agent_architecture: FieldEvidence;
+  memory_strategy: FieldEvidence;
+  skill_strategy: FieldEvidence;
   dataset: FieldEvidence;
   evaluation_metrics: FieldEvidence;
   findings: FieldEvidence;
   limitations: FieldEvidence;
   future_work: FieldEvidence;
+  method_class: string | null;
   source: "openalex" | "crossref" | "arxiv";
   source_url: string;
   oa_url: string | null;
@@ -47,6 +70,7 @@ export interface SearchMeta {
   sources_requested: string[];
   sources_failed: string[];
   keywords_used: Array<{ keyword: string; origin: "user" | "system_expanded" }>;
+  extraction_mode: ExtractionMode;
   notice: string;
 }
 
@@ -109,4 +133,45 @@ export interface ReportResponse {
   sections: ReportSection[];
   markdown: string;
   caveats: string[];
+  extraction_mode: ExtractionMode;
+}
+
+export interface MatrixColumn {
+  key: string;
+  label: string;
+  kind: "metadata" | "extracted" | "system_label";
+}
+
+export interface MatrixCell {
+  paper_id: string;
+  column: string;
+  evidence: FieldEvidence | null;
+  text: string | null;
+  edited_at: string | null;
+}
+
+export interface MatrixRow {
+  paper: Paper;
+  cells: Record<string, MatrixCell>;
+}
+
+export interface MatrixFilters {
+  method_class?: string;
+  dataset?: string;
+  metric?: string;
+  year_from?: number;
+  year_to?: number;
+}
+
+export interface MatrixResponse {
+  columns: MatrixColumn[];
+  rows: MatrixRow[];
+  generated_at: string;
+  notice: string;
+  extraction_mode: ExtractionMode;
+  filters_applied: MatrixFilters;
+  available_filters: {
+    method_class?: string[];
+    year_range?: (number | null)[];
+  };
 }

@@ -13,6 +13,13 @@ from pydantic import BaseModel, Field, model_validator
 
 EvidenceSource = Literal["abstract", "fulltext", "manual", "model_inference", "none"]
 Confidence = Literal["high", "medium", "low", "unknown"]
+ExtractionMethod = Literal["heuristic", "llm", "manual", "none"]
+FieldEvidenceStatus = Literal["grounded", "unknown"]
+
+# The only extractor implemented in this build is cue-word matching over retrieved
+# abstracts. An LLM extractor must flip this constant and set extraction_method="llm"
+# on every field it fills, so the UI never advertises a mode that did not run.
+EXTRACTION_MODE: ExtractionMethod = "heuristic"
 EvidenceStatus = Literal[
     "abstract_grounded",
     "fulltext_grounded",
@@ -25,6 +32,9 @@ EvidenceStatus = Literal[
 EXTRACTED_FIELDS: tuple[str, ...] = (
     "research_problem",
     "method",
+    "agent_architecture",
+    "memory_strategy",
+    "skill_strategy",
     "dataset",
     "evaluation_metrics",
     "findings",
@@ -44,6 +54,8 @@ class FieldEvidence(BaseModel):
     evidence_span: str | None = None
     source_url: str | None = None
     confidence: Confidence = "unknown"
+    extraction_method: ExtractionMethod = "heuristic"
+    evidence_status: FieldEvidenceStatus = "unknown"
     updated_at: str | None = None
 
     @model_validator(mode="after")
@@ -66,6 +78,16 @@ class FieldEvidence(BaseModel):
             )
         if self.evidence_source != "none" and self.confidence == "unknown":
             raise ValueError("a grounded field must state a confidence level")
+        if self.evidence_source == "none":
+            self.extraction_method = "none"
+            self.evidence_status = "unknown"
+            self.confidence = "unknown"
+        else:
+            self.evidence_status = "grounded"
+            if self.extraction_method == "none":
+                self.extraction_method = (
+                    "manual" if self.evidence_source in ("manual", "fulltext") else "heuristic"
+                )
         return self
 
     @classmethod
@@ -88,11 +110,18 @@ class Paper(BaseModel):
 
     research_problem: FieldEvidence = Field(default_factory=FieldEvidence.unknown)
     method: FieldEvidence = Field(default_factory=FieldEvidence.unknown)
+    agent_architecture: FieldEvidence = Field(default_factory=FieldEvidence.unknown)
+    memory_strategy: FieldEvidence = Field(default_factory=FieldEvidence.unknown)
+    skill_strategy: FieldEvidence = Field(default_factory=FieldEvidence.unknown)
     dataset: FieldEvidence = Field(default_factory=FieldEvidence.unknown)
     evaluation_metrics: FieldEvidence = Field(default_factory=FieldEvidence.unknown)
     findings: FieldEvidence = Field(default_factory=FieldEvidence.unknown)
     limitations: FieldEvidence = Field(default_factory=FieldEvidence.unknown)
     future_work: FieldEvidence = Field(default_factory=FieldEvidence.unknown)
+
+    # System-assigned label used for matrix grouping and filtering, not a claim
+    # made by the paper's authors.
+    method_class: str | None = None
 
     source: Literal["openalex", "crossref", "arxiv"]
     source_url: str
@@ -151,8 +180,9 @@ class SearchMeta(BaseModel):
     sources_requested: list[str]
     sources_failed: list[str]
     keywords_used: list[KeywordUsed] = Field(default_factory=list)
+    extraction_mode: ExtractionMethod = EXTRACTION_MODE
     notice: str = (
-        "Phase 1 extracts from retrieved metadata and abstracts only. "
-        "No full text was read. Fields marked unknown were not found in the "
-        "retrieved material."
+        "Extraction ran in Heuristic Mode (cue-word matching over retrieved abstracts). "
+        "No LLM provider was used and no full text was read. Fields marked unknown were "
+        "not found in the retrieved material."
     )

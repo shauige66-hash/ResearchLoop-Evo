@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import get_settings
+from ..models.gap import ResearchGap
 from ..models.paper import FieldEvidence, Paper
 
 
@@ -87,6 +88,30 @@ class Store:
             CREATE INDEX IF NOT EXISTS idx_papers_project ON papers(project_id);
             CREATE INDEX IF NOT EXISTS idx_papers_year ON papers(publication_year);
             CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi);
+
+            CREATE TABLE IF NOT EXISTS gaps (
+                gap_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                gap_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                confidence_label TEXT NOT NULL,
+                title TEXT NOT NULL,
+                json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS gap_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gap_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                human_note TEXT,
+                reviewed_at TEXT NOT NULL,
+                FOREIGN KEY (gap_id) REFERENCES gaps(gap_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_gaps_run ON gaps(run_id);
+            CREATE INDEX IF NOT EXISTS idx_gaps_status ON gaps(status);
             """
         )
         self.conn.commit()
@@ -239,8 +264,10 @@ class Store:
         if not paper:
             return None
 
-        # Update the field
+        # Update the field, then re-run validation so evidence_status and
+        # missing_fields are re-derived rather than left stale.
         setattr(paper, field, evidence)
+        paper = Paper.model_validate(paper.model_dump())
         paper.retrieved_at = datetime.now(timezone.utc).isoformat()
 
         # Save updated paper
@@ -273,6 +300,90 @@ class Store:
         )
         self.conn.commit()
         return paper
+
+    # -------------------------------------------------------------------- gaps
+    def save_gap(self, gap: ResearchGap) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO gaps (gap_id, run_id, gap_type, status, confidence_label, title, json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(gap_id) DO UPDATE SET
+                status=excluded.status,
+                confidence_label=excluded.confidence_label,
+                title=excluded.title,
+                json=excluded.json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                gap.gap_id,
+                gap.run_id,
+                gap.gap_type,
+                gap.status,
+                gap.confidence_label,
+                gap.title,
+                gap.model_dump_json(),
+                gap.created_at,
+                gap.updated_at,
+            ),
+        )
+        self.conn.commit()
+
+    def get_gap(self, gap_id: str) -> ResearchGap | None:
+        row = self.conn.execute("SELECT json FROM gaps WHERE gap_id=?", (gap_id,)).fetchone()
+        return ResearchGap.model_validate_json(row["json"]) if row else None
+
+    def list_gaps(
+        self,
+        run_id: str | None = None,
+        status: str | None = None,
+        gap_type: str | None = None,
+    ) -> list[ResearchGap]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if run_id:
+            conditions.append("run_id=?")
+            params.append(run_id)
+        if status:
+            conditions.append("status=?")
+            params.append(status)
+        if gap_type:
+            conditions.append("gap_type=?")
+            params.append(gap_type)
+        where = " AND ".join(conditions) if conditions else "1=1"
+        rows = self.conn.execute(
+            f"SELECT json FROM gaps WHERE {where} ORDER BY created_at DESC", params
+        ).fetchall()
+        return [ResearchGap.model_validate_json(row["json"]) for row in rows]
+
+    def review_gap(
+        self,
+        gap_id: str,
+        status: str,
+        human_note: str | None = None,
+        edits: dict[str, str] | None = None,
+    ) -> ResearchGap | None:
+        gap = self.get_gap(gap_id)
+        if not gap:
+            return None
+        for field, value in (edits or {}).items():
+            setattr(gap, field, value)
+        gap.status = status
+        gap.human_note = human_note
+        gap.updated_at = datetime.now(timezone.utc).isoformat()
+        gap = ResearchGap.model_validate(gap.model_dump())
+        self.save_gap(gap)
+        self.conn.execute(
+            "INSERT INTO gap_reviews (gap_id, status, human_note, reviewed_at) VALUES (?, ?, ?, ?)",
+            (gap_id, status, human_note, gap.updated_at),
+        )
+        self.conn.commit()
+        return gap
+
+    def list_gap_reviews(self, gap_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM gap_reviews WHERE gap_id=? ORDER BY reviewed_at", (gap_id,)
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_runs(self, project_id: str | None = None) -> list[dict]:
         """List all runs, optionally filtered by project."""

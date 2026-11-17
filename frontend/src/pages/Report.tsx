@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { listPapers, generateReport } from "../api/client";
 import type { Paper, ReportResponse } from "../types/paper";
 
@@ -9,18 +9,13 @@ export default function Report() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useState(() => {
-    loadPapers();
-  });
-
-  async function loadPapers() {
-    try {
-      const result = await listPapers({ page: 1, page_size: 100 });
-      setPapers(result.papers);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load papers");
-    }
-  }
+  useEffect(() => {
+    listPapers({ page: 1, page_size: 100 })
+      .then((result) => setPapers(result.papers))
+      .catch((err) =>
+        setError(err instanceof Error ? err.message : "Failed to load papers")
+      );
+  }, []);
 
   function toggleSelection(paperId: string) {
     setSelectedIds((prev) => {
@@ -62,9 +57,37 @@ export default function Report() {
     <div className="space-y-6">
       <h2 className="text-2xl font-bold">Research Report</h2>
 
+      {report?.extraction_mode && (
+        <div className="p-3 bg-amber-900/20 border border-amber-700 rounded text-sm text-amber-200">
+          <strong>Heuristic Mode</strong> — extraction_mode={report.extraction_mode}。
+          报告区分事实、作者观点与系统推断；未调用 LLM Provider，也未阅读全文。
+        </div>
+      )}
+
       <div className="bg-slate-800 rounded-lg p-4">
-        <h3 className="text-lg font-semibold mb-3">Select Papers</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-lg font-semibold">Select Papers</h3>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setSelectedIds(new Set(papers.map((p) => p.paper_id)))}
+              className="px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-sm"
+            >
+              全选
+            </button>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-sm"
+            >
+              清空
+            </button>
+          </div>
+        </div>
         <div className="space-y-2 max-h-64 overflow-auto">
+          {papers.length === 0 && (
+            <div className="text-sm text-slate-500 p-2">
+              文献库为空。请先在 Literature Discovery 执行一次真实检索。
+            </div>
+          )}
           {papers.map((paper) => (
             <label key={paper.paper_id} className="flex items-center gap-3 p-2 hover:bg-slate-700 rounded cursor-pointer">
               <input
