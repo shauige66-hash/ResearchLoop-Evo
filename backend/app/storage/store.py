@@ -13,8 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from ..config import get_settings
+from ..models.experiment import BenchmarkCase, ExperimentRun, ExperimentSpec
 from ..models.gap import ResearchGap
 from ..models.paper import FieldEvidence, Paper
+from ..models.skill import SkillVersion
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class Store:
@@ -112,6 +118,58 @@ class Store:
 
             CREATE INDEX IF NOT EXISTS idx_gaps_run ON gaps(run_id);
             CREATE INDEX IF NOT EXISTS idx_gaps_status ON gaps(status);
+
+            CREATE TABLE IF NOT EXISTS benchmark_cases (
+                case_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL,
+                split TEXT NOT NULL,
+                reference_status TEXT NOT NULL,
+                json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS experiment_specs (
+                spec_id TEXT PRIMARY KEY,
+                template_id TEXT NOT NULL,
+                json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS experiment_runs (
+                run_id TEXT PRIMARY KEY,
+                spec_id TEXT NOT NULL,
+                case_id TEXT NOT NULL,
+                arm TEXT NOT NULL,
+                split TEXT NOT NULL,
+                skill_version_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                json TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS skill_versions (
+                version_id TEXT PRIMARY KEY,
+                skill_id TEXT NOT NULL,
+                version_number INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                parent_version TEXT,
+                json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS skill_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id TEXT NOT NULL,
+                event TEXT NOT NULL,
+                detail TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cases_split ON benchmark_cases(split);
+            CREATE INDEX IF NOT EXISTS idx_expruns_spec ON experiment_runs(spec_id);
+            CREATE INDEX IF NOT EXISTS idx_expruns_case ON experiment_runs(case_id);
+            CREATE INDEX IF NOT EXISTS idx_skills_status ON skill_versions(skill_id, status);
             """
         )
         self.conn.commit()
@@ -395,6 +453,206 @@ class Store:
         else:
             rows = self.conn.execute("SELECT * FROM runs ORDER BY created_at DESC").fetchall()
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------- benchmark
+    def save_benchmark_case(self, case: "BenchmarkCase") -> None:
+        self.conn.execute(
+            """
+            INSERT INTO benchmark_cases (case_id, topic, split, reference_status, json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(case_id) DO UPDATE SET
+                topic=excluded.topic, split=excluded.split,
+                reference_status=excluded.reference_status, json=excluded.json
+            """,
+            (
+                case.case_id, case.topic, case.split, case.reference_status,
+                case.model_dump_json(), case.created_at or _now(),
+            ),
+        )
+        self.conn.commit()
+
+    def get_benchmark_case(self, case_id: str) -> "BenchmarkCase | None":
+        row = self.conn.execute(
+            "SELECT json FROM benchmark_cases WHERE case_id=?", (case_id,)
+        ).fetchone()
+        return BenchmarkCase.model_validate_json(row["json"]) if row else None
+
+    def list_benchmark_cases(
+        self, split: str | None = None, reference_status: str | None = None
+    ) -> list["BenchmarkCase"]:
+        query = "SELECT json FROM benchmark_cases"
+        clauses, params = [], []
+        if split:
+            clauses.append("split=?")
+            params.append(split)
+        if reference_status:
+            clauses.append("reference_status=?")
+            params.append(reference_status)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY topic, case_id"
+        return [
+            BenchmarkCase.model_validate_json(r["json"])
+            for r in self.conn.execute(query, params).fetchall()
+        ]
+
+    # --------------------------------------------------------- experiment spec
+    def save_spec(self, spec: "ExperimentSpec") -> None:
+        self.conn.execute(
+            """
+            INSERT INTO experiment_specs (spec_id, template_id, json, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(spec_id) DO UPDATE SET json=excluded.json
+            """,
+            (spec.spec_id, spec.template_id, spec.model_dump_json(), spec.created_at or _now()),
+        )
+        self.conn.commit()
+
+    def get_spec(self, spec_id: str) -> "ExperimentSpec | None":
+        row = self.conn.execute(
+            "SELECT json FROM experiment_specs WHERE spec_id=?", (spec_id,)
+        ).fetchone()
+        return ExperimentSpec.model_validate_json(row["json"]) if row else None
+
+    def list_specs(self) -> list["ExperimentSpec"]:
+        rows = self.conn.execute(
+            "SELECT json FROM experiment_specs ORDER BY created_at DESC"
+        ).fetchall()
+        return [ExperimentSpec.model_validate_json(r["json"]) for r in rows]
+
+    # ---------------------------------------------------------- experiment run
+    def save_experiment_run(self, run: "ExperimentRun", split: str) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO experiment_runs
+                (run_id, spec_id, case_id, arm, split, skill_version_id, status, json,
+                 started_at, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                status=excluded.status, json=excluded.json, finished_at=excluded.finished_at
+            """,
+            (
+                run.run_id, run.spec_id, run.case_id, run.arm, split,
+                run.skill_version_id, run.status, run.model_dump_json(),
+                run.started_at or _now(), run.finished_at,
+            ),
+        )
+        self.conn.commit()
+
+    def get_experiment_run(self, run_id: str) -> "ExperimentRun | None":
+        row = self.conn.execute(
+            "SELECT json FROM experiment_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        return ExperimentRun.model_validate_json(row["json"]) if row else None
+
+    def list_experiment_runs(
+        self,
+        spec_id: str | None = None,
+        case_id: str | None = None,
+        arm: str | None = None,
+        split: str | None = None,
+    ) -> list["ExperimentRun"]:
+        query = "SELECT json FROM experiment_runs"
+        clauses, params = [], []
+        for column, value in (
+            ("spec_id", spec_id), ("case_id", case_id), ("arm", arm), ("split", split)
+        ):
+            if value:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY started_at DESC"
+        return [
+            ExperimentRun.model_validate_json(r["json"])
+            for r in self.conn.execute(query, params).fetchall()
+        ]
+
+    # ------------------------------------------------------------ skill registry
+    def save_skill_version(self, version: "SkillVersion") -> None:
+        """Versions are immutable: an existing version_id is never rewritten."""
+        existing = self.conn.execute(
+            "SELECT version_id FROM skill_versions WHERE version_id=?", (version.version_id,)
+        ).fetchone()
+        if existing:
+            raise ValueError(f"skill version {version.version_id} already exists and is immutable")
+        self.conn.execute(
+            """
+            INSERT INTO skill_versions
+                (version_id, skill_id, version_number, status, parent_version, json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                version.version_id, version.skill_id, version.version_number,
+                version.status, version.parent_version, version.model_dump_json(),
+                version.created_at or _now(),
+            ),
+        )
+        self.conn.commit()
+
+    def get_skill_version(self, version_id: str) -> "SkillVersion | None":
+        row = self.conn.execute(
+            "SELECT json FROM skill_versions WHERE version_id=?", (version_id,)
+        ).fetchone()
+        return SkillVersion.model_validate_json(row["json"]) if row else None
+
+    def list_skill_versions(
+        self, skill_id: str | None = None, status: str | None = None
+    ) -> list["SkillVersion"]:
+        query = "SELECT json FROM skill_versions"
+        clauses, params = [], []
+        if skill_id:
+            clauses.append("skill_id=?")
+            params.append(skill_id)
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY version_number DESC"
+        return [
+            SkillVersion.model_validate_json(r["json"])
+            for r in self.conn.execute(query, params).fetchall()
+        ]
+
+    def set_skill_status(self, version_id: str, status: str) -> "SkillVersion | None":
+        version = self.get_skill_version(version_id)
+        if not version:
+            return None
+        version.status = status  # type: ignore[assignment]
+        self.conn.execute(
+            "UPDATE skill_versions SET status=?, json=? WHERE version_id=?",
+            (status, version.model_dump_json(), version_id),
+        )
+        self.conn.commit()
+        return version
+
+    def next_version_number(self, skill_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT MAX(version_number) AS n FROM skill_versions WHERE skill_id=?", (skill_id,)
+        ).fetchone()
+        return int(row["n"] or 0) + 1
+
+    def add_skill_event(self, version_id: str, event: str, detail: dict | None = None) -> None:
+        self.conn.execute(
+            "INSERT INTO skill_events (version_id, event, detail, created_at) VALUES (?, ?, ?, ?)",
+            (version_id, event, json.dumps(detail or {}, ensure_ascii=False), _now()),
+        )
+        self.conn.commit()
+
+    def list_skill_events(self, version_id: str | None = None) -> list[dict]:
+        if version_id:
+            rows = self.conn.execute(
+                "SELECT * FROM skill_events WHERE version_id=? ORDER BY id", (version_id,)
+            ).fetchall()
+        else:
+            rows = self.conn.execute("SELECT * FROM skill_events ORDER BY id").fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["detail"] = json.loads(item["detail"] or "{}")
+            out.append(item)
+        return out
 
     def close(self) -> None:
         """Close the database connection."""

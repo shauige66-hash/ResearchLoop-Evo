@@ -52,10 +52,8 @@ def test_root():
 
 
 def test_future_endpoints_return_501():
+    """Only the phases that are genuinely not implemented may answer 501."""
     endpoints = [
-        "/api/experiments/design",
-        "/api/experiments/run",
-        "/api/experiments/verify",
         "/api/evolve/skills",
         "/api/skills/evaluate",
         "/api/skills/promote",
@@ -65,6 +63,16 @@ def test_future_endpoints_return_501():
         assert response.status_code == 501
         data = response.json()
         assert data["detail"]["status"] == "not_implemented"
+
+
+def test_experiment_endpoints_are_no_longer_stubs():
+    """Phase 3 replaced the experiment stubs with real, validated endpoints."""
+    assert client.get("/api/experiments/templates").status_code == 200
+    # Empty bodies must fail validation, not return "not implemented".
+    for endpoint in ("/api/experiments/design", "/api/experiments/run", "/api/experiments/verify"):
+        response = client.post(endpoint, json={})
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["type"] == "missing"
 
 
 def test_gap_discover_rejects_single_paper():

@@ -25,24 +25,6 @@ def _not_implemented(phase: int, description: str) -> dict:
     )
 
 
-router_experiments = APIRouter(prefix="/api/experiments", tags=["experiments"])
-
-
-@router_experiments.post("/design")
-async def design_experiment():
-    return _not_implemented(3, "Experiment design requires Phase 2 gaps")
-
-
-@router_experiments.post("/run")
-async def run_experiment():
-    return _not_implemented(3, "Experiment execution")
-
-
-@router_experiments.post("/verify")
-async def verify_experiment():
-    return _not_implemented(3, "Independent experiment verification")
-
-
 router_evolve = APIRouter(prefix="/api/evolve", tags=["evolve"])
 
 

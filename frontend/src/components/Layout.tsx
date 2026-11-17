@@ -8,7 +8,7 @@ const NAV_ITEMS = [
   { path: "/matrix", label: "Literature Matrix", phase: null },
   { path: "/report", label: "Research Report", phase: null },
   { path: "/gaps", label: "Research Gap", phase: null },
-  { path: "/experiments", label: "Experiment Lab", phase: 3 },
+  { path: "/experiments", label: "Experiment Lab", phase: null },
   { path: "/evolution", label: "Evolution Lab", phase: 4 },
   { path: "/skills", label: "Skill Registry", phase: 5 },
 ];

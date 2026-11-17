@@ -2,9 +2,32 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import pytest
 
 from app.models.paper import FieldEvidence, Paper
+
+
+@pytest.fixture
+def temp_db():
+    """Point the store at a throwaway SQLite file so tests never touch real data."""
+    import app.config as config_module
+    import app.storage.store as store_module
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ["RLE_DB_PATH"] = os.path.join(tmpdir, "test.db")
+        if store_module._store is not None:
+            store_module._store.close()
+        store_module._store = None
+        config_module.get_settings.cache_clear()
+        yield store_module.get_store()
+        if store_module._store is not None:
+            store_module._store.close()
+        store_module._store = None
+        os.environ.pop("RLE_DB_PATH", None)
+        config_module.get_settings.cache_clear()
 
 
 @pytest.fixture

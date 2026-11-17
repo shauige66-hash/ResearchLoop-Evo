@@ -6,6 +6,7 @@ import Library from "./pages/Library";
 import Matrix from "./pages/Matrix";
 import Report from "./pages/Report";
 import ResearchGap from "./pages/ResearchGap";
+import ExperimentLab from "./pages/ExperimentLab";
 import Placeholder from "./pages/Placeholder";
 
 export default function App() {
@@ -19,16 +20,7 @@ export default function App() {
           <Route path="/matrix" element={<Matrix />} />
           <Route path="/report" element={<Report />} />
           <Route path="/gaps" element={<ResearchGap />} />
-          <Route
-            path="/experiments"
-            element={
-              <Placeholder
-                phase={3}
-                title="Experiment Lab"
-                description="Design and execute minimal viable experiments with independent verification."
-              />
-            }
-          />
+          <Route path="/experiments" element={<ExperimentLab />} />
           <Route
             path="/evolution"
             element={

@@ -13,6 +13,23 @@ import type {
   GapStatus,
   ResearchGap,
 } from "../types/gap";
+import type {
+  Arm,
+  BenchmarkCase,
+  BenchmarkCaseResponse,
+  BenchmarkListResponse,
+  CompareResponse,
+  ExperimentRun,
+  ExperimentSpec,
+  ExperimentTemplate,
+  ReferenceStatus,
+  RunResponse,
+  SearchStrategy,
+  SkillVersion,
+  SpecDetail,
+  Split,
+  VerifyResponse,
+} from "../types/experiment";
 
 const API_BASE = "/api";
 
@@ -174,4 +191,171 @@ export async function rerunCounterSearch(
   topK = 10
 ): Promise<ResearchGap> {
   return request(`/gaps/${gapId}/counter-search?top_k=${topK}`, { method: "POST" });
+}
+
+// ------------------------------------------------------------- experiment lab
+export async function listTemplates(): Promise<{
+  templates: ExperimentTemplate[];
+  total: number;
+}> {
+  return request("/experiments/templates");
+}
+
+export async function listBenchmarkCases(params?: {
+  split?: Split;
+  reference_status?: ReferenceStatus;
+}): Promise<BenchmarkListResponse> {
+  const searchParams = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value) searchParams.append(key, value);
+  });
+  return request(`/experiments/benchmark/cases?${searchParams.toString()}`);
+}
+
+export async function createBenchmarkCase(payload: {
+  topic: string;
+  query: string;
+  reference_dois?: string[];
+  split?: Split;
+  notes?: string;
+  verify_references?: boolean;
+}): Promise<BenchmarkCaseResponse> {
+  return request("/experiments/benchmark/cases", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function addBenchmarkReferences(
+  caseId: string,
+  dois: string[]
+): Promise<BenchmarkCaseResponse> {
+  return request(`/experiments/benchmark/cases/${caseId}/references`, {
+    method: "POST",
+    body: JSON.stringify({ dois }),
+  });
+}
+
+export async function confirmBenchmarkReferences(
+  caseId: string,
+  confirmedBy: string,
+  dois?: string[]
+): Promise<BenchmarkCaseResponse> {
+  return request(`/experiments/benchmark/cases/${caseId}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ confirmed_by: confirmedBy, dois: dois || [] }),
+  });
+}
+
+export async function assignSplits(): Promise<BenchmarkListResponse> {
+  return request("/experiments/benchmark/assign-splits", { method: "POST" });
+}
+
+export async function designExperiment(payload: {
+  case_ids: string[];
+  baseline_version_id: string;
+  candidate_version_id: string;
+  gap_id?: string | null;
+  sources?: string[];
+  year_from?: number | null;
+  year_to?: number | null;
+  top_k?: number;
+  max_api_requests?: number;
+  use_cache?: boolean;
+}): Promise<ExperimentSpec> {
+  return request("/experiments/design", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listSpecs(): Promise<{ specs: ExperimentSpec[]; total: number }> {
+  return request("/experiments/specs");
+}
+
+export async function getSpec(specId: string): Promise<SpecDetail> {
+  return request(`/experiments/specs/${specId}`);
+}
+
+export async function lockCandidate(specId: string): Promise<ExperimentSpec> {
+  return request(`/experiments/specs/${specId}/lock`, { method: "POST" });
+}
+
+export async function runExperiment(payload: {
+  spec_id: string;
+  split?: Split | null;
+  arms?: Arm[];
+}): Promise<RunResponse> {
+  return request("/experiments/run", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listExperimentRuns(params?: {
+  spec_id?: string;
+  case_id?: string;
+  arm?: Arm;
+  split?: Split;
+}): Promise<{ runs: ExperimentRun[]; total: number }> {
+  const searchParams = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value) searchParams.append(key, value);
+  });
+  return request(`/experiments/runs?${searchParams.toString()}`);
+}
+
+export async function getExperimentRun(
+  runId: string
+): Promise<{ run: ExperimentRun; snapshot_available: boolean; case: BenchmarkCase | null }> {
+  return request(`/experiments/runs/${runId}`);
+}
+
+export async function verifyExperiment(runId: string): Promise<VerifyResponse> {
+  return request("/experiments/verify", {
+    method: "POST",
+    body: JSON.stringify({ run_id: runId }),
+  });
+}
+
+export async function compareSpec(specId: string): Promise<CompareResponse> {
+  return request(`/experiments/compare/${specId}`);
+}
+
+// ------------------------------------------------------------- skill registry
+export async function listSkillVersions(): Promise<{
+  skill_id: string;
+  versions: SkillVersion[];
+  total: number;
+  evolvable_components: string[];
+  immutable_components: string[];
+}> {
+  return request("/skills/versions");
+}
+
+export async function getActiveSkill(): Promise<{ version: SkillVersion }> {
+  return request("/skills/active");
+}
+
+export async function createSkillVersion(payload: {
+  strategy: SearchStrategy;
+  mutation_description: string;
+  source_trials?: string[];
+  parent_version?: string | null;
+}): Promise<SkillVersion> {
+  return request("/skills/versions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function previewSkillQueries(payload: {
+  version_id: string;
+  topic: string;
+  query: string;
+}): Promise<{ version_id: string; queries: string[]; query_count: number; max_keywords: number }> {
+  return request("/skills/preview", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }

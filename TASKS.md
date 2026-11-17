@@ -56,21 +56,46 @@
 - [x] 真实一次端到端检索验证（本机 API 实测）
 - [ ] 用户检查与确认
 
-## Phase 2 · Research Gap（未开始）
+## Phase 2 · Research Gap（已完成，commit 82abba3）
 
-- [ ] 空白候选数据模型（`GapCandidate`：claim、支撑论文、证据链、反例、置信度）
-- [ ] 从 limitations / future_work 聚合候选，聚类与打分
-- [ ] 空白可反驳：列出"已被谁做过"的反证论文
-- [ ] 人工评审界面：接受 / 拒绝 / 改写，反馈落库
-- [ ] 可选 LLM 抽取增强（先 20 篇小样本试跑并报告用量，见 CREDIT_BUDGET §5）
+- [x] `ResearchGap` 12 字段契约，Pydantic 强制"至少两篇不同论文 + 逐字证据"
+- [x] 6 类空白检测（method / evaluation / generalization / reliability / efficiency / reproducibility）
+- [x] 禁止单篇 Future Work 推断空白；必须跨论文比较方法与实验范围
+- [x] 每个候选自动对 OpenAlex / Crossref / arXiv 构造反证检索，命中则降级为 Low
+- [x] 未找到反证只表述"当前检索范围内未发现"，绝不表述"不存在"
+- [x] 置信度为有依据的 Low / Medium / High 标签 + rationale，非统计概率
+- [x] 默认 `needs_human_review`；人工接受 / 拒绝 / 改写落库
+- [x] 新增 `agent_architecture` / `memory_strategy` / `skill_strategy` 抽取字段
+- [x] 无 LLM Provider，全链路显式标注 Heuristic Mode
+- [ ] 可选 LLM 抽取增强（未启用；需先出额度预算并等确认，见 CREDIT_BUDGET §5）
 
-## Phase 3 · Experiment Lab（未开始）
+## Phase 3 · Experiment Lab（后端 + 前端已完成并实测）
 
-- [ ] `ExperimentSpec`：假设、变量、数据、基线、评价指标、算力预算
-- [ ] 最小可行实验模板（可复现代码 + 随机种子 + 依赖锁定）
-- [ ] 真实执行与产物归档（日志、原始输出、失败堆栈）
-- [ ] 独立验证：验证 Agent 不共享执行上下文，只看产物
-- [ ] 评估是否使用 Cloud Agent（需先出额度预算并等确认）
+- [x] 单一 Agent-Evolution 模板；假设标注 `under_test`，非既定结论
+- [x] `BenchmarkCase` + Development / Validation / Holdout 按 topic 分组切分（防泄漏）
+- [x] 参考 DOI 经 Crossref / OpenAlex 真实核验；人工 `confirmed_by` 才成为 Ground Truth
+- [x] 未确认参考集 → `awaiting_reference_set`，允许检索、禁止晋升，不编造覆盖率
+- [x] 独立纯 Python Evaluator：Coverage@K / Missed Refs / API 查询数 / 唯一论文数 / 执行时间
+- [x] 成本口径含缓存命中（`api_request_count + cache_hits`），暖缓存不能掩盖额外检索
+- [x] 冻结协议：来源 / 年份 / Top-K / 请求上限对两臂一致；Candidate 不得改评测与基准
+- [x] 原始响应快照落盘 + `POST /verify` 从快照独立重算并比对
+- [x] Holdout 在候选锁定前关闭，锁定后仅允许一次
+- [x] 六条晋升规则实现于 `promotion_blockers`，门禁未通过时列出全部真实原因
+- [x] Experiment Lab 页面：基准 / Skill / 设计 / 执行 / 复核 / 历史对比
+- [ ] 图表像素级视觉验收（受环境限制，见"已知限制"）
+
+## 已知限制
+
+- **Recharts 图表未能视觉验收**：应用内浏览器视口塌陷（`window.innerWidth === 0`、
+  `innerHeight === 0`，`take_screenshot` 返回 `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`），
+  `ResponsiveContainer` 测得宽度 0，因此不挂载 SVG surface。已尝试 3 次（等待、
+  强制父容器 1000px、读取 React fiber）均无法在此环境取得非零尺寸。
+  控制台无任何错误；图表数据绑定已用真实 API 数据核对：
+  development / validation 各两臂，baseline `api_queries=3`、candidate `api_queries=6`、
+  `unique_papers=20`，全部来自已落库的 run 记录，无静态数字。
+  **结论：数据绑定为真，像素渲染未验证**，需在正常浏览器中复核。
+- **自进化实验尚未通过最终验收**：3 个基准案例的参考 DOI 已真实核验但**未经人工确认**，
+  覆盖率保持 `null`，晋升门禁关闭。交付的是可运行流程 + 待标注基准。
 
 ## Phase 4 · Evolution Lab（未开始）
 
