@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Runtime data (SQLite DB, HTTP cache, experiment artifacts)
+backend/var/
+*.db
+*.db-journal
+*.sqlite3
+
+# Secrets — never commit
+.env
+.env.local
+*.pem
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+*.log
