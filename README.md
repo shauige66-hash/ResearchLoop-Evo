@@ -161,4 +161,8 @@ ResearchLoop-Evo/
 - **LLM 提议器未在真实 Provider 上运行**：服务端未配置 Key，实测走确定性回退并显式标注原因；
   LLM 路径的校验、限额与失败回退由离线测试覆盖。
 - **回滚正向路径仅有离线测试覆盖**：真实库中无 archived 版本（晋升始终被正确拒绝）。
+- **跨 run 的论文归属只保留最后一次**：`papers` 以 `paper_id` 为主键并 upsert `run_id`，
+  同一篇论文被两条流程检索到时按 `run_id` 过滤 Library 会少显示（实测 12 篇中少 2 篇）。
+  workflow 自身的 `context["paper_ids"]` 完整，矩阵/空白/实验/档案不受影响。
+  正确修法是加 `run_papers` 关联表，属数据迁移，留待下一轮。
 - 详见 `CREDIT_BUDGET.md` 关于额度与部署能力的核实结果，`TASKS.md` 关于逐项验收与真实运行记录。

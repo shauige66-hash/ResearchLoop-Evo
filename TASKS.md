@@ -299,6 +299,21 @@
       §4.1 缓存假通过陷阱 + §5 LLM 开关前成本评估（尚未启用）
 - [x] `TASKS.md`：Phase 6 逐项验收 + 两条真实运行记录 + 本节
 
+### 本轮新发现的一个数据归属问题（已定位根因，未修，如实记录）
+
+`papers` 表以 `paper_id` 为主键，`save_paper` 用
+`ON CONFLICT(paper_id) DO UPDATE SET run_id=excluded.run_id`
+（[store.py:242](backend/app/storage/store.py)）。因此**同一篇论文被两条流程检索到时，
+只保留最后一次的 `run_id`**：`wf_824946f92a37` 的 12 个 `paper_ids` 中有 2 篇
+（`A-Mem`、`Agentic RAG Survey`）的行归属已指向后跑的 `run_1794937848428`，
+按该 run_id 过滤 Library 只显示 10 篇。
+
+- **影响范围有限**：workflow 的 `context["paper_ids"]` 保存了自己完整的 12 个 id，
+  矩阵、空白、实验、档案都按 context 取数，**不受影响**；受影响的只有
+  `GET /api/literature/papers?run_id=…` 这一种过滤视图。
+- **正确修法**：新增 `run_papers(run_id, paper_id)` 关联表，`papers.run_id` 降级为首次来源；
+  属于数据迁移，本轮 P5 范围是测试/构建/文档，**不在收尾阶段启动新的开发任务**，故留待下一轮。
+
 ### 验收边界（不可逾越）
 
 - [x] 交付的是**可运行的进化流程 + 待标注基准**，不是"已验证的性能提升"

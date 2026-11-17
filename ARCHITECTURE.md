@@ -131,6 +131,8 @@ workflows(workflow_id, topic, status, current_step, json, created_at, updated_at
 
 注意：`experiment_runs.split` 是**独立列**，不在序列化 JSON 中；
 `EvaluationReport` 的字段名是 `coverage_at_k`（不是 `reference_coverage_at_k`）。
+`papers` 以 `paper_id` 为主键并 upsert，`run_id` 会被最后一次检索覆盖——
+跨 run 共享论文的归属因此是**有损**的（见 §13），workflow 用自己的 `context["paper_ids"]` 取数。
 
 ### 3.4 ResearchGap（12 个字段，缺一不可）
 
@@ -377,3 +379,4 @@ promotion_decision* → research_dossier
 | 成功回滚的真实演示 | ⬜ 真实库中无 archived 版本 | 先有一次真实晋升 |
 | LLM 提议器真实 Provider 运行 | ⬜ 服务端未配置 Key | 用户确认额度后配置环境变量 |
 | 正式部署 | ⬜ 本轮不做 | 前端可静态托管；后端需另行确认低成本常驻方案（Sites 无常驻 Python 运行时） |
+| `run_papers` 关联表 | ⬜ 已定位根因，未修 | `papers` upsert 覆盖 `run_id`，跨 run 共享论文按 run 过滤会少显示；workflow context 不受影响 |
