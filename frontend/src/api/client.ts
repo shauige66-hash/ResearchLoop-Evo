@@ -37,6 +37,13 @@ import type {
   SkillEvent,
   SkillVersionDetail,
 } from "../types/evolution";
+import type {
+  Dossier,
+  StepCatalogEntry,
+  StepId,
+  WorkflowResponse,
+  WorkflowRun,
+} from "../types/workflow";
 
 const API_BASE = "/api";
 
@@ -452,4 +459,70 @@ export async function listEvolutionRounds(specId?: string): Promise<{
 
 export async function getEvolutionRound(roundId: string): Promise<{ round: EvolutionRound }> {
   return request(`/evolve/rounds/${roundId}`);
+}
+
+// ------------------------------------------------------------- 18-step workflow
+export async function getWorkflowSteps(): Promise<{
+  steps: StepCatalogEntry[];
+  total: number;
+  notice: string;
+}> {
+  return request("/workflows/steps");
+}
+
+export async function startWorkflow(payload: {
+  topic: string;
+  query?: string;
+  sources?: string[];
+  top_k?: number;
+  year_from?: number | null;
+  year_to?: number | null;
+  prefer_reviews?: boolean;
+}): Promise<WorkflowResponse> {
+  return request("/workflows", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function listWorkflows(): Promise<{ workflows: WorkflowRun[]; total: number }> {
+  return request("/workflows");
+}
+
+export async function getWorkflow(workflowId: string): Promise<WorkflowResponse> {
+  return request(`/workflows/${workflowId}`);
+}
+
+export async function advanceWorkflow(
+  workflowId: string,
+  payload: { max_steps?: number; from_step?: StepId | null },
+): Promise<WorkflowResponse> {
+  return request(`/workflows/${workflowId}/advance`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function approveWorkflowGap(
+  workflowId: string,
+  payload: { gap_id: string; decision: "accepted" | "rejected"; decided_by: string; human_note?: string },
+): Promise<WorkflowResponse> {
+  return request(`/workflows/${workflowId}/approval`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function decideWorkflowPromotion(
+  workflowId: string,
+  payload: { decision: "promote" | "rollback" | "keep"; decided_by: string; version_id?: string | null; reason?: string },
+): Promise<WorkflowResponse> {
+  return request(`/workflows/${workflowId}/decision`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getWorkflowDossier(workflowId: string): Promise<{
+  workflow_id: string;
+  dossier: Dossier;
+}> {
+  return request(`/workflows/${workflowId}/dossier`);
 }

@@ -15,6 +15,7 @@ from .api.routes_experiments import router as experiments_router
 from .api.routes_gaps import router as gaps_router
 from .api.routes_literature import router as literature_router
 from .api.routes_skills import router as skills_router
+from .api.routes_workflows import router as workflows_router
 from .config import get_settings
 from .services.experiment import ensure_seed_skill
 from .services.http import close_client
@@ -60,6 +61,7 @@ def create_app() -> FastAPI:
     app.include_router(experiments_router)
     app.include_router(skills_router)
     app.include_router(evolution_router)
+    app.include_router(workflows_router)
 
     @app.get("/")
     async def root():

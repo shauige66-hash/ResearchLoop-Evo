@@ -9,6 +9,8 @@ import ResearchGap from "./pages/ResearchGap";
 import ExperimentLab from "./pages/ExperimentLab";
 import EvolutionLab from "./pages/EvolutionLab";
 import SkillRegistry from "./pages/SkillRegistry";
+import Workflow from "./pages/Workflow";
+import Dossier from "./pages/Dossier";
 
 export default function App() {
   return (
@@ -24,6 +26,8 @@ export default function App() {
           <Route path="/experiments" element={<ExperimentLab />} />
           <Route path="/evolution" element={<EvolutionLab />} />
           <Route path="/skills" element={<SkillRegistry />} />
+          <Route path="/workflow" element={<Workflow />} />
+          <Route path="/dossier" element={<Dossier />} />
         </Routes>
       </Layout>
     </BrowserRouter>

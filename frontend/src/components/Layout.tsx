@@ -11,6 +11,8 @@ const NAV_ITEMS = [
   { path: "/experiments", label: "Experiment Lab" },
   { path: "/evolution", label: "Evolution Lab" },
   { path: "/skills", label: "Skill Registry" },
+  { path: "/workflow", label: "18-Step Workflow" },
+  { path: "/dossier", label: "Research Dossier" },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {

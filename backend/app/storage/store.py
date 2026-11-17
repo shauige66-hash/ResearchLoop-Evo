@@ -18,6 +18,7 @@ from ..models.experiment import BenchmarkCase, ExperimentRun, ExperimentSpec
 from ..models.gap import ResearchGap
 from ..models.paper import FieldEvidence, Paper
 from ..models.skill import SkillVersion
+from ..models.workflow import WorkflowRun
 
 
 def _now() -> str:
@@ -173,6 +174,16 @@ class Store:
                 parent_version_id TEXT NOT NULL,
                 json TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS workflows (
+                workflow_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL,
+                status TEXT NOT NULL,
+                current_step TEXT NOT NULL,
+                json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_cases_split ON benchmark_cases(split);
@@ -695,6 +706,43 @@ class Store:
                 "SELECT json FROM evolution_rounds ORDER BY created_at DESC"
             ).fetchall()
         return [EvolutionRound.model_validate_json(r["json"]) for r in rows]
+
+    def save_workflow(self, workflow: "WorkflowRun") -> None:
+        """Upsert the whole workflow state so a crash never loses completed steps."""
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT INTO workflows (workflow_id, topic, status, current_step, json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(workflow_id) DO UPDATE SET
+                status=excluded.status,
+                current_step=excluded.current_step,
+                json=excluded.json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                workflow.workflow_id,
+                workflow.topic,
+                workflow.status,
+                workflow.current_step,
+                workflow.model_dump_json(),
+                workflow.created_at or now,
+                now,
+            ),
+        )
+        self.conn.commit()
+
+    def get_workflow(self, workflow_id: str) -> "WorkflowRun | None":
+        row = self.conn.execute(
+            "SELECT json FROM workflows WHERE workflow_id=?", (workflow_id,)
+        ).fetchone()
+        return WorkflowRun.model_validate_json(row["json"]) if row else None
+
+    def list_workflows(self) -> list["WorkflowRun"]:
+        rows = self.conn.execute(
+            "SELECT json FROM workflows ORDER BY created_at DESC"
+        ).fetchall()
+        return [WorkflowRun.model_validate_json(r["json"]) for r in rows]
 
     def close(self) -> None:
         """Close the database connection."""
