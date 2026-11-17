@@ -23,6 +23,12 @@ def canonical_doi(doi: str | None) -> str | None:
     return doi.lower() if doi else None
 
 
+def _best_relevance(primary: float | None, secondary: float | None) -> float | None:
+    """Keep the highest relevance reported by any source; None means none did."""
+    scores = [s for s in (primary, secondary) if s is not None]
+    return max(scores) if scores else None
+
+
 def normalize_record(record: RawWorkRecord, run_id: str | None = None) -> Paper:
     """Convert a RawWorkRecord into a Paper with full provenance."""
     paper_id = f"{record.source}:{record.raw_id}"
@@ -70,7 +76,7 @@ def merge_records(primary: RawWorkRecord, secondary: RawWorkRecord) -> RawWorkRe
         review_evidence=primary.review_evidence or secondary.review_evidence,
         citation_count=primary.citation_count or secondary.citation_count,
         language=primary.language or secondary.language,
-        relevance_score=max(primary.relevance_score, secondary.relevance_score),
+        relevance_score=_best_relevance(primary.relevance_score, secondary.relevance_score),
         source_url=primary.source_url or secondary.source_url,
         oa_url=primary.oa_url or secondary.oa_url,
         raw={**secondary.raw, **primary.raw},

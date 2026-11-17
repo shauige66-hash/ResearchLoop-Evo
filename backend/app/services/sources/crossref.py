@@ -45,7 +45,8 @@ async def search_crossref(
     if client.settings.mailto:
         params["mailto"] = client.settings.mailto
 
-    # Crossref select fields to reduce payload
+    # Crossref select fields to reduce payload. "language" is not a valid select
+    # on /works and makes the whole query fail with HTTP 400.
     select_fields = [
         "DOI",
         "title",
@@ -56,7 +57,6 @@ async def search_crossref(
         "URL",
         "abstract",
         "is-referenced-by-count",
-        "language",
     ]
     params["select"] = ",".join(select_fields)
 
@@ -123,8 +123,8 @@ async def search_crossref(
         source_url = item.get("URL", "")
         oa_url = None  # Crossref doesn't provide OA URL directly
 
-        # Crossref doesn't provide relevance score; use citation count as proxy
-        relevance = 0.0
+        # Crossref does not report a relevance score for /works queries.
+        relevance = None
 
         language = item.get("language")
 

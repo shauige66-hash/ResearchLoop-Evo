@@ -62,3 +62,35 @@ def test_rank_keyword_overlap():
 
 def test_rank_empty_list():
     assert rank_papers([], keywords=[]) == []
+
+
+def test_missing_source_signals_do_not_structurally_sink_a_paper():
+    """arXiv reports neither relevance nor citations; it must still be rankable."""
+    arxiv_style = Paper(
+        paper_id="arxiv:1",
+        title="LLM agent memory mechanisms",
+        source="arxiv",
+        source_url="https://arxiv.org/abs/1",
+        relevance_score=None,
+        citation_count=None,
+        publication_year=2026,
+    )
+    openalex_style = Paper(
+        paper_id="openalex:1",
+        title="Unrelated older work",
+        source="openalex",
+        source_url="https://openalex.org/1",
+        relevance_score=1.0,
+        citation_count=1,
+        publication_year=2010,
+    )
+    result = rank_papers([openalex_style, arxiv_style], keywords=["agent", "memory"])
+    assert result[0].paper_id == "arxiv:1"
+
+
+def test_unknown_relevance_is_distinct_from_zero_relevance():
+    unknown = _make_paper("unknown", year=2026)
+    unknown.relevance_score = None
+    zero = _make_paper("zero", relevance=0.0, year=2026)
+    result = rank_papers([zero, unknown], keywords=["agent"])
+    assert result[0].paper_id == "unknown"

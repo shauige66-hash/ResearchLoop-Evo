@@ -14,6 +14,7 @@ The pipeline:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -26,6 +27,8 @@ from .http import HttpFailure, get_client
 from .normalize import normalize_record
 from .rank import rank_papers
 from .sources import arxiv, crossref, openalex
+
+logger = logging.getLogger(__name__)
 
 
 def _expand_keywords(topic: TopicInput) -> list[KeywordUsed]:
@@ -136,6 +139,16 @@ async def _search_source(
             detail=exc.detail,
         )
         return [], error
+    except Exception as exc:
+        # Attribute unexpected failures to the real source instead of "unknown",
+        # and keep the traceback in the log so the cause stays diagnosable.
+        logger.exception("Unexpected failure in %s for keyword %r", source, keyword)
+        return [], SourceError(
+            source=source,
+            keyword=keyword,
+            status=None,
+            detail=f"{type(exc).__name__}: {exc}",
+        )
 
 
 async def search_pipeline(topic: TopicInput) -> SearchResponse:

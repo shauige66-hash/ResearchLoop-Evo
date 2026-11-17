@@ -64,7 +64,9 @@ def rank_papers(
              "citations": 0.2, "review_bonus": 0.15}
 
     Returns:
-        List of papers sorted by score (highest first).
+        List of papers sorted by score (highest first). The score is the weighted
+        mean over the signals actually available for that paper, so sources that
+        do not report relevance or citations are not structurally penalized.
     """
     if weights is None:
         weights = {
@@ -79,20 +81,22 @@ def rank_papers(
     scored: list[tuple[float, Paper]] = []
 
     for paper in papers_list:
-        relevance = min(1.0, paper.relevance_score / 10.0) if paper.relevance_score else 0.0
-        keyword_score = _keyword_overlap(paper, keywords)
-        year_score = _year_recency(paper.publication_year)
-        citation_score = _normalize_citations(paper.citation_count)
-        review_score = 1.0 if (prefer_reviews and paper.is_review) else 0.0
+        # Signals a source never reports (arXiv/Crossref relevance, arXiv citations)
+        # are excluded and the remaining weights renormalized, so a paper is not
+        # permanently outranked just because its source lacks a field.
+        signals: list[tuple[float, float]] = []
+        if paper.relevance_score is not None:
+            signals.append((weights["relevance"], min(1.0, paper.relevance_score / 10.0)))
+        if keywords:
+            signals.append((weights["keyword_overlap"], _keyword_overlap(paper, keywords)))
+        signals.append((weights["year"], _year_recency(paper.publication_year)))
+        if paper.citation_count is not None:
+            signals.append((weights["citations"], _normalize_citations(paper.citation_count)))
+        if prefer_reviews:
+            signals.append((weights["review_bonus"], 1.0 if paper.is_review else 0.0))
 
-        total = (
-            weights["relevance"] * relevance
-            + weights["keyword_overlap"] * keyword_score
-            + weights["year"] * year_score
-            + weights["citations"] * citation_score
-            + weights["review_bonus"] * review_score
-        )
-
+        weight_sum = sum(w for w, _ in signals)
+        total = sum(w * s for w, s in signals) / weight_sum if weight_sum else 0.0
         scored.append((total, paper))
 
     scored.sort(key=lambda x: x[0], reverse=True)

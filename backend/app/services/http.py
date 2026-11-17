@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
+import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +24,86 @@ from ..config import get_settings
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 BACKOFF_SECONDS = (1.0, 3.0)
+
+logger = logging.getLogger(__name__)
+
+# NO_PROXY entries httpx could not turn into a URL pattern, kept for diagnostics.
+REJECTED_PROXY_ENTRIES: list[str] = []
+
+
+def _no_proxy_pattern(entry: str) -> str | None:
+    """Translate one NO_PROXY entry into an httpx mount pattern, or None."""
+    host = entry.strip()
+    if not host:
+        return None
+    if "://" in host:
+        return host
+    # An already-bracketed IPv6 literal such as "[::1]" is not recognised as IPv6
+    # by httpx, which then emits the unparseable pattern "all://*[::1]".
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if "/" in host:  # CIDR block: httpx patterns match hosts, not ranges
+        host = host.split("/", 1)[0]
+    try:
+        ipaddress.IPv6Address(host)
+        return f"all://[{host}]"
+    except ValueError:
+        pass
+    try:
+        ipaddress.IPv4Address(host)
+        return f"all://{host}"
+    except ValueError:
+        pass
+    if host.lower() == "localhost":
+        return f"all://{host}"
+    return f"all://*{host}"
+
+
+def build_proxy_mounts() -> dict[str, httpx.AsyncBaseTransport | None]:
+    """Build proxy mounts from the ambient environment, validating every pattern.
+
+    httpx parses each NO_PROXY entry as a URL while constructing the client, so a
+    single malformed entry raises InvalidURL before any request is sent and takes
+    down all three literature sources at once. Validating here keeps legitimate
+    proxy settings working and records what had to be dropped.
+    """
+    mounts: dict[str, httpx.AsyncBaseTransport | None] = {}
+    rejected: list[str] = []
+
+    def usable(pattern: str) -> bool:
+        try:
+            httpx.URL(pattern)
+        except (httpx.InvalidURL, ValueError):
+            return False
+        return True
+
+    for scheme in ("http", "https", "all"):
+        raw = os.environ.get(f"{scheme.upper()}_PROXY") or os.environ.get(f"{scheme}_proxy")
+        if not raw:
+            continue
+        url = raw if "://" in raw else f"http://{raw}"
+        if not usable(url):
+            rejected.append(f"{scheme.upper()}_PROXY={raw}")
+            continue
+        mounts[f"{scheme}://"] = httpx.AsyncHTTPTransport(proxy=url)
+
+    no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    for entry in no_proxy.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if entry == "*":
+            return {}
+        pattern = _no_proxy_pattern(entry)
+        if pattern is None or not usable(pattern):
+            rejected.append(f"NO_PROXY={entry}")
+            continue
+        mounts[pattern] = None
+
+    REJECTED_PROXY_ENTRIES[:] = rejected
+    if rejected:
+        logger.warning("Ignoring unparseable proxy environment entries: %s", ", ".join(rejected))
+    return mounts
 
 
 class HttpFailure(Exception):
@@ -55,8 +138,11 @@ class TokenBucket:
 
     def __init__(self, rate_per_second: float, min_interval: float = 0.0) -> None:
         self.rate = max(rate_per_second, 0.05)
+        # Capacity must hold at least one whole token, otherwise a rate below 1/s
+        # (arXiv uses 0.3) can never accumulate enough to issue a single request.
+        self.capacity = max(1.0, self.rate)
         self.min_interval = max(min_interval, 0.0)
-        self._tokens = 1.0
+        self._tokens = self.capacity
         self._updated = time.monotonic()
         self._lock = asyncio.Lock()
 
@@ -64,7 +150,9 @@ class TokenBucket:
         async with self._lock:
             while True:
                 now = time.monotonic()
-                self._tokens = min(self.rate, self._tokens + (now - self._updated) * self.rate)
+                self._tokens = min(
+                    self.capacity, self._tokens + (now - self._updated) * self.rate
+                )
                 self._updated = now
                 if self._tokens >= 1.0:
                     self._tokens -= 1.0
@@ -95,10 +183,14 @@ class SourceClient:
 
     async def client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            # Supplying an explicit transport stops httpx from re-parsing the raw
+            # proxy environment itself; build_proxy_mounts() has already validated it.
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.settings.request_timeout),
                 follow_redirects=True,
                 headers={"User-Agent": "ResearchLoopEvo/0.1 (research prototype)"},
+                transport=httpx.AsyncHTTPTransport(),
+                mounts=build_proxy_mounts(),
             )
         return self._client
 
@@ -154,7 +246,15 @@ class SourceClient:
         refresh: bool = False,
         cache_ttl: int | None = None,
     ) -> HttpOutcome:
-        request = httpx.Request("GET", url, params=params, headers={"Accept": accept})
+        timeout = timeout or self.settings.request_timeout
+        # httpx 0.28 removed send(timeout=...); per-request timeouts travel in extensions.
+        request = httpx.Request(
+            "GET",
+            url,
+            params=params,
+            headers={"Accept": accept},
+            extensions={"timeout": httpx.Timeout(timeout).as_dict()},
+        )
         cache_key = str(request.url)
         ttl = self.settings.cache_ttl_seconds if cache_ttl is None else cache_ttl
 
@@ -164,18 +264,18 @@ class SourceClient:
                 self._cache_hits += 1
                 return HttpOutcome(cached, True, 200, 0, 0)
 
-        timeout = timeout or self.settings.request_timeout
         client = await self.client()
         attempts = self.settings.max_retries
         last_status: int | None = None
         last_detail = "no request attempted"
+        retry_after: str | None = None
         started = time.monotonic()
         requests_made = 0
 
         for attempt in range(attempts + 1):
             await self.bucket(source).acquire()
             try:
-                response = await client.send(request, timeout=timeout)
+                response = await client.send(request)
             except httpx.TimeoutException:
                 last_status, last_detail = None, f"timeout after {timeout:.0f}s"
             except httpx.HTTPError as exc:

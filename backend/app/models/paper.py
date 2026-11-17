@@ -102,7 +102,7 @@ class Paper(BaseModel):
     review_evidence: str | None = None
     citation_count: int | None = None
     language: str | None = None
-    relevance_score: float = 0.0
+    relevance_score: float | None = None
 
     evidence_status: EvidenceStatus = "unknown"
     missing_fields: list[str] = Field(default_factory=list)

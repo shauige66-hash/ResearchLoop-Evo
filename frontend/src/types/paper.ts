@@ -30,7 +30,7 @@ export interface Paper {
   review_evidence: string | null;
   citation_count: number | null;
   language: string | null;
-  relevance_score: number;
+  relevance_score: number | null;
   evidence_status: string;
   missing_fields: string[];
   duplicate_of: string | null;

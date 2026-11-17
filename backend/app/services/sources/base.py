@@ -21,7 +21,7 @@ class RawWorkRecord:
     review_evidence: str | None = None
     citation_count: int | None = None
     language: str | None = None
-    relevance_score: float = 0.0
+    relevance_score: float | None = None
     source_url: str = ""
     oa_url: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)

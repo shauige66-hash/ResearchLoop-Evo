@@ -111,7 +111,7 @@ async def search_openalex(
         source_url = item.get("ids", {}).get("openalex") or ""
         oa_url = item.get("open_access", {}).get("oa_url")
 
-        relevance = item.get("relevance_score") or 0.0
+        relevance = item.get("relevance_score")
         try:
             relevance = float(relevance)
         except (TypeError, ValueError):

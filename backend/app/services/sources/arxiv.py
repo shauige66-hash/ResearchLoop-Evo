@@ -116,8 +116,8 @@ async def search_arxiv(
         source_url = entry_id
         oa_url = entry_id  # arXiv papers are open access by definition
 
-        # arXiv doesn't provide relevance scores
-        relevance = 0.0
+        # arXiv does not expose a numeric relevance score.
+        relevance = None
 
         # arXiv doesn't provide language field; assume English
         language = "en"
