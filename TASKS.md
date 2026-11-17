@@ -175,10 +175,15 @@
 
 ### 真实运行记录（Live API，非 Mock）
 
-| 流程 | 主题 | 文献 | 请求 | 来源失败 | 空白 | 反证 | 进化候选 | 验收状态 |
+| 流程 | 主题 | 文献 | 真实请求 / 缓存命中 | 来源失败 | 空白 | 反证论文 | 进化候选 | 验收状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `wf_824946f92a37` | agent experience learning | 12 | 14 | 0 | 6 | 30 | 1（2 项如实跳过） | `awaiting_reference_set` |
-| `wf_44b4549be7ab` | LLM agent memory mechanisms | 12 | 15 | 0 | 4 | 17 | 0（3 项如实跳过） | `awaiting_reference_set` |
+| `wf_824946f92a37` | agent experience learning | 12 | 14 / 0 | 0 | 6 | 30 | 1（2 项如实跳过） | `awaiting_reference_set` |
+| `wf_44b4549be7ab` | LLM agent memory mechanisms | 12 | 15 / 3 | 0 | 4 | 17 | 0（3 项如实跳过） | `awaiting_reference_set` |
+
+> 成本口径：`total_api_queries = requests_made + cache_hits`，因此第二条流程的文献检索
+> 总查询数是 **18**，不是 15。缓存命中照样计入成本，不让候选看起来更省预算。
+> 同理，`wf_824946f92a37` 被接受空白 `gap_18dcbce49f34` 的反证检索是**缓存服务**的
+> （`requests_made=0, cache_hits=3`），该事实原样记录在 `counter_search_scope` 中。
 
 - 第一条流程完整走完 18 步：人工接受 `gap_18dcbce49f34`（generalization / Medium / 4 篇支撑），
   种子候选把 `{query}` 替换为 `{query} agentic`（真实新词），
@@ -189,6 +194,117 @@
 - 第二条流程本轮 0 候选：三项变异分别因"无确认参考集，拒绝编造词汇"、
   "主题词已全部出现在已执行查询中"、"来源优先级已等于实测贡献顺序，无意义变异不提出"被跳过。
 - 浏览器控制台无任何错误；`tsc -b && vite build` 通过。
+
+### 真实实验与版本记录（直接查 SQLite 核对，非叙述）
+
+- 库中累计：**22 次文献检索 / 87 篇论文 / 18 个空白 / 9 个基准 case / 5 份冻结协议 /
+  20 条实验运行 / 11 个技能版本 / 6 个进化轮 / 2 条完整流程**。
+- **20 条实验运行全部 `status=awaiting_reference_set`、`coverage_at_k=null`、`source_errors=0`**。
+  没有任何一条计算出覆盖率，因此不存在任何"性能提升"数字。
+- 两条流程的两臂对比（development / validation 各一条）：
+
+| 协议 | 臂 | 唯一论文 | 真实请求 | 缓存命中 | 总查询 | 覆盖率 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `spec_78bd9c84f786`（wf1） | baseline | 12 | 0 | 3 | 3 | `null` |
+| `spec_78bd9c84f786`（wf1） | candidate | 12 | 3 | 0 | 3 | `null` |
+| `spec_891898bbf756`（wf1 回放） | baseline / candidate | 12 / 12 | 0 / 0 | 3 / 3 | 3 / 3 | `null` |
+| `spec_fe4de61c2f09`（wf2） | baseline | 12 | 3 | 0 | 3 | `null` |
+| `spec_fe4de61c2f09`（wf2） | candidate | 12 | 3 | 0 | 3 | `null` |
+
+  请求比 1.0（≤1.5× 上限），但**覆盖率无法比较**，所以门禁第 1 条无法判定为"提升"。
+- 版本谱系：v1 `skillv_d6ddaef6304f`（seed，**始终 Active**）→ 10 个 candidate，
+  **0 个 archived**（从未发生真实晋升，因此回滚正向路径只有离线测试覆盖）。
+  wf1 种子候选 v9 把 `{query}` 变为 `{query} agentic`；进化轮 `evor_ed4a2e844430`
+  产出 v10，唯一改动是 `source_priority` 由 `[openalex, crossref, arxiv]`
+  置换为 `[openalex, arxiv, crossref]`（冻结来源集合不变，只动同分裁决顺序）。
+  wf2 种子候选 v11 为 `{query} judge`，其进化轮 `evor_addbeb3fb204` **0 提案 / 3 项如实跳过**。
+- 修复前的无意义种子候选 v8（`{query} learning`，与 case 措辞重复）作为历史记录留在注册表中，
+  对应协议 `spec_a0f50d75493e` 已被回退清空；**不删除历史版本**，版本不可覆盖。
+- 6 个进化轮全部 `proposer_mode=deterministic`，
+  `llm_skip_reason="no LLM provider is configured on the server; the deterministic proposer ran instead"`。
+- 晋升门禁真实判断（`allowed=false`，逐条原文）：
+  `no human-confirmed reference set for: case_…` /
+  `case_…: coverage is unavailable without confirmed references` /
+  `case_…: both arms must be executed before promotion` /
+  `the candidate was never locked for the final holdout check` /
+  `the final holdout check has not been executed`。
+  wf1 人工选择"尝试晋升" → `outcome=refused`；wf2 人工选择"保持现状" → `outcome=kept`。
+  两者 Active 均为 v1。
+
+## Phase 7 · P5 测试、构建、文档与验收边界（已完成）
+
+### 离线测试与构建
+
+- [x] 全量离线测试 **235 passed, 3 skipped**（14 个测试模块，检索 / DOI 核验 / 反证检索
+      全部 patch 在**使用点**，不联网、不依赖外部服务）
+- [x] 未删除任何既有测试，未放宽任何验收条件
+- [x] `tsc -b && vite build` 通过（产物 `index-BKK6kn4L.js`，806.78 kB），
+      开启 `noUnusedLocals` / `noUnusedParameters` / `verbatimModuleSyntax`
+
+### 真实 API 测试：修掉两个"假通过"
+
+- [x] **陷阱一：磁盘缓存服务的"真实测试"**。首次运行 3 passed 仅用 **0.11 秒**，
+      `cache_hits` 非零而 `requests_made=0`——这种通过什么都没验证。
+      修复：三个 live 测试全部传 `refresh=True` 强制绕过缓存
+      （`refresh` 是适配器的独立参数，不来自 `TopicInput`）。
+- [x] **陷阱二：Windows Proactor 事件循环亲和性**。缓存的 `httpx.AsyncClient`
+      的 transport 绑定在创建它的 loop 上；pytest-asyncio 每个测试一个 loop，
+      先前 loop 关闭后再拆连接会从后续测试抛出 `RuntimeError: Event loop is closed`。
+      第一次修复失败：strict 模式下 async generator 用普通 `@pytest.fixture`
+      **根本不会执行 teardown**。第二次修复成功：改用
+      `@pytest_asyncio.fixture(autouse=True)` 调用 `close_client()`，镜像 app lifespan。
+      **未改产品代码**——生产单 loop 是正确的，加 loop 探测属于为不可能场景写防御代码。
+- [x] 修复后真实运行 **3 passed / 9.25 秒**，`cache_hits=0`：
+
+| 来源 | 真实记录数 | 真实请求数 | 真实 DOI 样例 |
+| --- | --- | --- | --- |
+| OpenAlex | 5 | 2 | `10.1109/mnet.001.1900656` |
+| Crossref | 5 | 1 | `10.32388/lx0f9e`；组件记录 `10.7717/peerj-cs.2926/table-4` |
+| arXiv | 5 | 1 | `10.48550/arxiv.2209.05872` |
+
+- [x] 新发现：**Crossref 会返回组件记录**（`10.7717/peerj-cs.2926/table-4`
+      "Table 4: Smart contract vulnerability analysis."）。DOI 真实存在但不是论文，
+      下游按普通记录处理；**人工确认参考集时必须剔除**。已写入 README 已知限制与 ARCHITECTURE §1。
+
+### 截图：环境阻塞，如实记录（不伪造）
+
+- [x] 尝试 `take_screenshot` 于 `/dossier?workflow_id=wf_824946f92a37`，返回
+      `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`：
+      `viewport=0x0, visible=false, attached=false, cdpAttached=true, visibilityState=hidden`。
+      `window.innerWidth / innerHeight` 均为 0，因此 **Recharts `ResponsiveContainer`
+      不挂载 SVG surface**，旧图无法像素级视觉验收。
+- [x] **替代证据（真实、可复核）**：用 `take_snapshot` 取无障碍树 + `evaluate_script`
+      读真实 DOM 文本与数值，核对 18 步轨迹、门禁逐条拒绝原因、覆盖率渲染为 `—`（不是 0）、
+      档案验收状态 `awaiting_reference_set`；`list_console_messages` 无错误。
+- [x] 新增页面（Workflow / Dossier）改用**按真实数值比例绘制的 CSS 条 + 表格**绕开该问题。
+- [x] **结论：数据绑定为真，旧图像素渲染未验证**，需在正常浏览器中复核。
+      本轮**未产出截图文件**，不把文本抓取冒充截图。
+
+### 演示步骤（已写入 README §3，可逐步复现）
+
+1. **18-Step Workflow** → 填研究主题 → **创建流程**（只建状态，不自动执行）
+2. **连续执行到人工门禁** → 真实检索 12 篇 → 抽取 → 矩阵 → 空白 → 三源反证 → 停在第 8 步
+3. 填决策人 → 对候选点 **接受**（门禁关闭并推进 1 步）；可先去 Research Gap 页读证据原文
+4. **连续执行到人工门禁** → 假设 → 冻结协议 → 两臂真实执行 → 独立评测 → 诊断 → 变异 → 回放 → 停在第 17 步
+5. 晋升面板读逐条拒绝原因 → **尝试晋升**（被真实拒绝）或 **保持现状** → 第 18 步
+6. **Research Dossier** 看验收状态、7 节报告、空白与反证、实验对比、进化与版本决策
+
+### 文档更新
+
+- [x] `README.md`：进度横幅（可运行但**未通过最终验收**）、13 行真实性承诺、
+      演示路径、测试命令、目录树、Phase 1–6 路线图 + 待人工标注行、11 条已知限制
+- [x] `ARCHITECTURE.md` v0.6：13 节，能力核实 / 12 张表 / FieldEvidence 强制规则 /
+      冻结协议 / 六条门禁 / 进化边界 / 18 步编排 / 完整 API 表（无 501）/ 非功能性设计 / 演进路径
+- [x] `CREDIT_BUDGET.md`：Phase 状态表 + §4 实际消耗（**余额本机不可读，不编造**）+
+      §4.1 缓存假通过陷阱 + §5 LLM 开关前成本评估（尚未启用）
+- [x] `TASKS.md`：Phase 6 逐项验收 + 两条真实运行记录 + 本节
+
+### 验收边界（不可逾越）
+
+- [x] 交付的是**可运行的进化流程 + 待标注基准**，不是"已验证的性能提升"
+- [x] 无人工确认参考集 → 覆盖率 `null`（不是 0）→ 晋升门禁关闭 →
+      档案 `acceptance_status = awaiting_reference_set`
+- [x] **不宣称自进化实验已通过最终验收**
 
 ## 明确不做（避免范围蔓延）
 

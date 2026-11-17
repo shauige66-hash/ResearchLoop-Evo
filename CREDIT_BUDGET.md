@@ -36,31 +36,48 @@
 8. 不自动部署、不反复构建；生产构建只在阶段收尾验证一次。
 9. 需要外部付费资源（API 额度、Cloud Pack、Credit Pack）时，先说明原因与用量再等确认。
 
-## 3. 各 Phase 预计消耗
+## 3. 各 Phase 预计消耗与实际状态
 
-| Phase | 内容 | Efficient 档预计 | 高档位（Performance/Ultimate）预计 | 外部 API 成本 |
-| --- | --- | --- | --- | --- |
-| **1（本轮）** | 能力核实 + 项目初始化 + 5 份文档 + Literature Discovery 闭环 | ≈ 0（若选 Efficient；子 Agent 与网页抓取仍可能按倍率计费） | 约 50–150 | 0（公开学术 API 免费，无 key） |
-| 2 | Research Gap：证据聚类 + 空白候选 + 报告 | ≈ 0 | 约 80–200 | 若启用可选 LLM 抽取：取决于自带头额度 |
-| 3 | Experiment Lab：实验设计、真实执行、独立验证 | ≈ 0（本地执行） | 约 150–400 | 本地算力 0；若用 Cloud Agent：需单独预算 |
-| 4 | Evolution Lab：轨迹→Skill 变体搜索 | ≈ 0 | 约 200–500 | 变体搜索若走 Cloud Agent 需额度确认 |
-| 5 | Skill Registry + 评测晋升门禁 + 前端打磨 | ≈ 0 | 约 100–250 | 0 |
-| 部署 | 前端静态托管（Sites 限免期） | 低 | 低 | Sites 限免，注意使用上限 |
+| Phase | 内容 | Efficient 档预计 | 高档位（Performance/Ultimate）预计 | 外部 API 成本 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 能力核实 + 项目初始化 + 5 份文档 + Literature Discovery 闭环 | ≈ 0（若选 Efficient；子 Agent 与网页抓取仍可能按倍率计费） | 约 50–150 | 0（公开学术 API 免费，无 key） | ✅ 完成 |
+| 2 | Research Gap：多论文比较 + 6 类空白 + 三源反证检索 | ≈ 0 | 约 80–200 | 若启用可选 LLM 抽取：取决于自带头额度 | ✅ 完成（未启用 LLM） |
+| 3 | Experiment Lab：冻结协议、两臂真实执行、独立 Evaluator | ≈ 0（本地执行） | 约 150–400 | 本地算力 0；**未使用 Cloud Agent** | ✅ 完成 |
+| 4 | Evolution Lab：经验收集 → 6 类诊断 → 限额候选 → 回放 | ≈ 0 | 约 200–500 | **未使用 Cloud Agent**，确定性提议器 | ✅ 完成 |
+| 5 | Skill Registry + 六条晋升门禁 + 回滚守卫 | ≈ 0 | 约 100–250 | 0 | ✅ 完成 |
+| 6 | 18 步 Workflow + Research Dossier + 前端 11 页 | ≈ 0 | 约 150–350 | 0 | ✅ 完成 |
+| 部署 | 前端静态托管（Sites 限免期） | 低 | 低 | Sites 限免，注意使用上限 | ⬜ **本轮不做** |
 
-结论：**按上述规则，2,000 Credits/月足以覆盖 Phase 1–5 的开发**，前提是实现类工作放在 Efficient 档。风险点集中在：(a) 需要深度推理的架构决策；(b) 可选 LLM 文献抽取的规模化；(c) Cloud Agent 沙箱时长。
+结论：**按上述规则，2,000 Credits/月足以覆盖 Phase 1–6 的开发**，前提是实现类工作放在 Efficient 档。
+风险点集中在：(a) 需要深度推理的架构决策；(b) 可选 LLM 文献抽取的规模化；(c) Cloud Agent 沙箱时长。
+本轮 (b) 与 (c) 均未触发。
 
-## 4. Phase 1 实际消耗（执行后填写）
+## 4. 实际消耗（Phase 1–6，执行后填写）
 
 | 项 | 结果 |
 | --- | --- |
-| Qoder Credits | 本机无余额读取接口，需在 **Settings → Usage** 核对；本轮无 Cloud Agent、无部署、无 LLM 批量调用 |
-| Cloud Agent Session | 0 次 |
-| 外部 API 请求 | OpenAlex / Crossref / arXiv 公开接口，免费、无需 key（可选 mailto 仅用于礼貌池标识） |
-| 生产构建次数 | 每阶段收尾各 1 次 |
+| Qoder Credits | **本机无余额读取接口，无法给出真实数字，因此不编造。** 需在网页 **Settings → Usage** 或客户端右下角 Credits 按钮核对 |
+| Cloud Agent Session | **0 次**。真实实验执行改由本地 FastAPI 直接调用公开学术 API，零沙箱费用 |
+| 外部 LLM API 调用 | **0 次**。服务端未配置 Provider Key，抽取 / 空白 / 诊断 / 提议全部走确定性规则，UI 与报告显式标注 Heuristic Mode |
+| 部署 | **0 次**。未上线、未发布、未启用 Sites Database/Storage |
+| 外部学术 API 请求 | OpenAlex / Crossref / arXiv 公开接口，免费、无需 key（可选 mailto 仅用于礼貌池标识）。实测样例：两条 workflow 文献检索分别 **14 次请求 / 0 缓存命中** 与 **15 次请求 / 3 缓存命中**（总查询 14 与 18），0 来源失败；每个实验臂总查询 3（回放臂由缓存服务，`requests_made=0, cache_hits=3`）；3 个真实 API 测试共 4 次请求（`cache_hits=0`）。**公开 API 无计费计数器，故不给出虚构的累计总额** |
+| 生产构建次数 | 每阶段收尾各 1 次（`tsc -b && vite build`），无重复构建 |
+| 测试运行 | 离线全量 235 passed / 3 skipped；真实 API 测试单独运行 3 passed |
+| 子 Agent | 未启动并行子 Agent |
 
-## 5. 可选的 LLM 文献抽取：开关前的成本评估
+### 4.1 本轮发现的一个额度相关陷阱（已修复）
 
-Phase 2 若要把 300 篇论文的 method/dataset 抽取质量提上去：
+真实 API 测试原本可能被**磁盘缓存**服务：一次"3 passed"只用了 0.11 秒，
+`cache_hits` 非零而 `requests_made=0`——这种"通过"什么都没验证，却会让人误以为真实检索已验收。
+修复：三个 live 测试全部传 `refresh=True` 强制绕过缓存，并加 autouse fixture 在**本事件循环**上
+关闭共享客户端（镜像 app lifespan）。修复后真实运行 9.25 秒、三源各返回 5 条真实记录、`cache_hits=0`。
+
+同一原则也适用于实验成本统计：`total_api_queries = api_request_count + cache_hits`，
+缓存命中**不会**让候选看起来更省预算。
+
+## 5. 可选的 LLM 文献抽取：开关前的成本评估（尚未启用）
+
+若要把数百篇论文的 method/dataset 抽取质量提上去：
 
 - 朴素做法（每篇一次调用，无缓存）：300 次调用 → 明显不划算。
 - 本项目要求：
