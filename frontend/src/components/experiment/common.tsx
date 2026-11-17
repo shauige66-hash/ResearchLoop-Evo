@@ -60,7 +60,7 @@ export function Panel({
 
 export function ErrorBanner({ message }: { message: string }) {
   return (
-    <div className="p-3 bg-red-900/30 border border-red-700 rounded text-sm text-red-300 break-words">
+    <div className="p-3 bg-red-900/30 border border-red-700 rounded text-sm text-red-300 break-words whitespace-pre-line">
       {message}
     </div>
   );

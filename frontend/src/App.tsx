@@ -7,7 +7,8 @@ import Matrix from "./pages/Matrix";
 import Report from "./pages/Report";
 import ResearchGap from "./pages/ResearchGap";
 import ExperimentLab from "./pages/ExperimentLab";
-import Placeholder from "./pages/Placeholder";
+import EvolutionLab from "./pages/EvolutionLab";
+import SkillRegistry from "./pages/SkillRegistry";
 
 export default function App() {
   return (
@@ -21,26 +22,8 @@ export default function App() {
           <Route path="/report" element={<Report />} />
           <Route path="/gaps" element={<ResearchGap />} />
           <Route path="/experiments" element={<ExperimentLab />} />
-          <Route
-            path="/evolution"
-            element={
-              <Placeholder
-                phase={4}
-                title="Evolution Lab"
-                description="Extract skills from failure trajectories and iteratively improve agent capabilities."
-              />
-            }
-          />
-          <Route
-            path="/skills"
-            element={
-              <Placeholder
-                phase={5}
-                title="Skill Registry"
-                description="Version-controlled skill repository with independent evaluation and promotion gates."
-              />
-            }
-          />
+          <Route path="/evolution" element={<EvolutionLab />} />
+          <Route path="/skills" element={<SkillRegistry />} />
         </Routes>
       </Layout>
     </BrowserRouter>

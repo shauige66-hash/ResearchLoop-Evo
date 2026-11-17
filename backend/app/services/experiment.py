@@ -21,7 +21,13 @@ from ..models.experiment import (
     ExperimentSpec,
 )
 from ..models.schemas import TopicInput
-from ..models.skill import SKILL_ID, SkillVersion, baseline_strategy, plan_queries
+from ..models.skill import (
+    SKILL_ID,
+    SearchStrategy,
+    SkillVersion,
+    baseline_strategy,
+    plan_queries,
+)
 from ..storage.store import Store
 from .evaluator import coverage_delta, dataset_fingerprint, evaluate_run, request_ratio
 from .pipeline import search_pipeline
@@ -65,6 +71,26 @@ def _allowed_queries(spec: ExperimentSpec, queries: list[str]) -> tuple[list[str
     return queries[:limit], True
 
 
+def order_sources(priority: list[str], frozen: list[str]) -> list[str]:
+    """Permute the frozen source set by strategy priority — never add or drop one.
+
+    All sources are still queried. Priority changes the order papers enter the
+    pipeline, which decides ties in the stable relevance sort and therefore which
+    papers survive the top-k cut.
+    """
+    rank = {name: i for i, name in enumerate(priority)}
+    return sorted(frozen, key=lambda name: rank.get(name, len(rank)))
+
+
+def effective_years(
+    spec: ExperimentSpec, strategy: SearchStrategy
+) -> tuple[int | None, int | None]:
+    """A strategy may narrow the frozen year window, never widen it."""
+    lower = [y for y in (spec.year_from, strategy.search_filters.year_from) if y is not None]
+    upper = [y for y in (spec.year_to, strategy.search_filters.year_to) if y is not None]
+    return (max(lower) if lower else None, min(upper) if upper else None)
+
+
 async def execute_arm(
     spec: ExperimentSpec,
     case: BenchmarkCase,
@@ -87,13 +113,14 @@ async def execute_arm(
     )
     store.save_experiment_run(run, case.split)
 
+    year_from, year_to = effective_years(spec, version.strategy)
     topic = TopicInput(
         topic=case.topic,
         keywords=queries,
-        sources=list(spec.sources),
+        sources=order_sources(version.strategy.source_priority, list(spec.sources)),
         top_k=spec.top_k,
-        year_from=spec.year_from,
-        year_to=spec.year_to,
+        year_from=year_from,
+        year_to=year_to,
         expand_keywords=False,
         refresh=not spec.use_cache,
     )

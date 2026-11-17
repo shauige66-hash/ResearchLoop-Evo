@@ -2,15 +2,15 @@ import { Link, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 
 const NAV_ITEMS = [
-  { path: "/", label: "Dashboard", phase: null },
-  { path: "/discovery", label: "Literature Discovery", phase: null },
-  { path: "/library", label: "Literature Library", phase: null },
-  { path: "/matrix", label: "Literature Matrix", phase: null },
-  { path: "/report", label: "Research Report", phase: null },
-  { path: "/gaps", label: "Research Gap", phase: null },
-  { path: "/experiments", label: "Experiment Lab", phase: null },
-  { path: "/evolution", label: "Evolution Lab", phase: 4 },
-  { path: "/skills", label: "Skill Registry", phase: 5 },
+  { path: "/", label: "Dashboard" },
+  { path: "/discovery", label: "Literature Discovery" },
+  { path: "/library", label: "Literature Library" },
+  { path: "/matrix", label: "Literature Matrix" },
+  { path: "/report", label: "Research Report" },
+  { path: "/gaps", label: "Research Gap" },
+  { path: "/experiments", label: "Experiment Lab" },
+  { path: "/evolution", label: "Evolution Lab" },
+  { path: "/skills", label: "Skill Registry" },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -23,7 +23,6 @@ export default function Layout({ children }: { children: ReactNode }) {
         <nav className="space-y-1">
           {NAV_ITEMS.map((item) => {
             const isActive = location.pathname === item.path;
-            const isPlaceholder = item.phase !== null;
             return (
               <Link
                 key={item.path}
@@ -31,17 +30,10 @@ export default function Layout({ children }: { children: ReactNode }) {
                 className={`block px-3 py-2 rounded text-sm transition ${
                   isActive
                     ? "bg-blue-600 text-white"
-                    : isPlaceholder
-                    ? "text-slate-500 hover:bg-slate-700"
                     : "text-slate-300 hover:bg-slate-700"
                 }`}
               >
                 {item.label}
-                {isPlaceholder && (
-                  <span className="ml-2 text-xs bg-slate-600 px-1.5 py-0.5 rounded">
-                    Phase {item.phase}
-                  </span>
-                )}
               </Link>
             );
           })}

@@ -12,8 +12,12 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from ..models.evolution import EvaluateRequest, PromoteRequest, RollbackRequest
+from ..models.experiment import COVERAGE_NOTICE
 from ..models.skill import SKILL_ID, SkillVersion, SkillVersionCreate, plan_queries
-from ..services.experiment import ensure_seed_skill
+from ..services.evaluator import promotion_blockers
+from ..services.experiment import compare_case, ensure_seed_skill, run_spec
+from ..services.promotion import PromotionRefused, promote, rollback
 from ..storage.store import get_store
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -139,3 +143,92 @@ async def preview_queries(request: PreviewRequest) -> dict:
 async def list_events(version_id: str | None = Query(default=None)) -> dict:
     events = get_store().list_skill_events(version_id)
     return {"events": events, "total": len(events)}
+
+
+@router.post("/evaluate")
+async def evaluate_version(request: EvaluateRequest) -> dict:
+    """Execute the spec's arms and score them with the independent evaluator.
+
+    Development produces feedback, validation produces the baseline-vs-candidate
+    comparison, and holdout stays a locked one-shot check.
+    """
+    store = get_store()
+    spec = store.get_spec(request.spec_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"spec {request.spec_id} not found")
+    try:
+        runs = await run_spec(spec, store, split=request.split)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    cases = [c for c in store.list_benchmark_cases() if c.case_id in spec.case_ids]
+    all_runs = store.list_experiment_runs(spec_id=spec.spec_id)
+    by_case: dict[str, list] = {}
+    for run in all_runs:
+        by_case.setdefault(run.case_id, []).append(run)
+    comparisons = [compare_case(spec, c, by_case.get(c.case_id, [])) for c in cases]
+    gate = promotion_blockers(spec=spec, cases=cases, runs=all_runs)
+    return {
+        "spec_id": spec.spec_id,
+        "split": request.split,
+        "runs": [r.model_dump() for r in runs],
+        "comparisons": [c.model_dump() for c in comparisons],
+        "promotion_gate": {"allowed": not gate, "reasons": gate},
+        "notice": COVERAGE_NOTICE,
+    }
+
+
+@router.post("/promote")
+async def promote_version(request: PromoteRequest) -> dict:
+    store = get_store()
+    try:
+        version = promote(store, request.spec_id, request.version_id, request.decided_by)
+    except PromotionRefused as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "promotion refused by the independent gate", "reasons": exc.reasons},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "version": version.model_dump(),
+        "events": store.list_skill_events(version.version_id),
+        "notice": "New runs read this active version; historical runs keep their own snapshot.",
+    }
+
+
+@router.post("/rollback")
+async def rollback_version(request: RollbackRequest) -> dict:
+    store = get_store()
+    try:
+        version = rollback(store, request.version_id, request.decided_by, request.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "version": version.model_dump(),
+        "events": store.list_skill_events(version.version_id),
+        "notice": (
+            "Rollback restores a previously active version and bypasses the promotion gate by "
+            "design. It claims no improvement."
+        ),
+    }
+
+
+@router.get("/history")
+async def promotion_history(skill_id: str = Query(default=SKILL_ID)) -> dict:
+    """The full mutation and activation trail, oldest first."""
+    store = get_store()
+    versions = {v.version_id: v for v in store.list_skill_versions(skill_id=skill_id)}
+    events = [e for e in store.list_skill_events() if e["version_id"] in versions]
+    return {
+        "skill_id": skill_id,
+        "events": [
+            {
+                **e,
+                "version_number": versions[e["version_id"]].version_number,
+                "mutation_description": versions[e["version_id"]].mutation_description,
+            }
+            for e in events
+        ],
+        "total": len(events),
+    }

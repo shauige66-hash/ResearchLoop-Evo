@@ -52,6 +52,7 @@ class BenchmarkReference(BaseModel):
     doi: str
     title: str = ""
     source_url: str = ""
+    publication_year: int | None = None
     verified_via: Literal["crossref", "openalex", "manual"] = "manual"
     verified_at: str = ""
     # Metadata verification alone is not ground truth: a human must confirm that

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import get_settings
+from ..models.evolution import EvolutionRound
 from ..models.experiment import BenchmarkCase, ExperimentRun, ExperimentSpec
 from ..models.gap import ResearchGap
 from ..models.paper import FieldEvidence, Paper
@@ -166,10 +167,19 @@ class Store:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS evolution_rounds (
+                round_id TEXT PRIMARY KEY,
+                spec_id TEXT NOT NULL,
+                parent_version_id TEXT NOT NULL,
+                json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_cases_split ON benchmark_cases(split);
             CREATE INDEX IF NOT EXISTS idx_expruns_spec ON experiment_runs(spec_id);
             CREATE INDEX IF NOT EXISTS idx_expruns_case ON experiment_runs(case_id);
             CREATE INDEX IF NOT EXISTS idx_skills_status ON skill_versions(skill_id, status);
+            CREATE INDEX IF NOT EXISTS idx_evorounds_spec ON evolution_rounds(spec_id);
             """
         )
         self.conn.commit()
@@ -653,6 +663,38 @@ class Store:
             item["detail"] = json.loads(item["detail"] or "{}")
             out.append(item)
         return out
+
+    def save_evolution_round(self, record: "EvolutionRound") -> None:
+        self.conn.execute(
+            "INSERT INTO evolution_rounds (round_id, spec_id, parent_version_id, json, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                record.round_id,
+                record.spec_id,
+                record.parent_version_id,
+                record.model_dump_json(),
+                record.created_at or _now(),
+            ),
+        )
+        self.conn.commit()
+
+    def get_evolution_round(self, round_id: str) -> "EvolutionRound | None":
+        row = self.conn.execute(
+            "SELECT json FROM evolution_rounds WHERE round_id=?", (round_id,)
+        ).fetchone()
+        return EvolutionRound.model_validate_json(row["json"]) if row else None
+
+    def list_evolution_rounds(self, spec_id: str | None = None) -> list["EvolutionRound"]:
+        if spec_id:
+            rows = self.conn.execute(
+                "SELECT json FROM evolution_rounds WHERE spec_id=? ORDER BY created_at DESC",
+                (spec_id,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT json FROM evolution_rounds ORDER BY created_at DESC"
+            ).fetchall()
+        return [EvolutionRound.model_validate_json(r["json"]) for r in rows]
 
     def close(self) -> None:
         """Close the database connection."""

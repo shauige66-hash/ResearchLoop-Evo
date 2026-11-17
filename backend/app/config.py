@@ -75,7 +75,15 @@ class Settings:
 
     llm_enabled: bool
     llm_max_calls: int
+    # Server-side only. Never serialized into any API response.
+    llm_api_key: str = ""
+    llm_base_url: str = ""
+    llm_model: str = ""
     cors_origins: list[str] = field(default_factory=list)
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.llm_enabled and self.llm_api_key and self.llm_base_url and self.llm_model)
 
     @property
     def enabled_sources(self) -> list[str]:
@@ -108,6 +116,9 @@ def get_settings() -> Settings:
         title_ratio_threshold=_env_float("RLE_TITLE_RATIO", 0.92),
         llm_enabled=_env_flag("RLE_LLM_ENABLED", False),
         llm_max_calls=_env_int("RLE_LLM_MAX_CALLS", 20),
+        llm_api_key=_env("RLE_LLM_API_KEY", ""),
+        llm_base_url=_env("RLE_LLM_BASE_URL", ""),
+        llm_model=_env("RLE_LLM_MODEL", ""),
         cors_origins=[
             o.strip()
             for o in _env(

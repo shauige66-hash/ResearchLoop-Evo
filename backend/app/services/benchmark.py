@@ -26,6 +26,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _crossref_year(message: dict) -> int | None:
+    for key in ("published-print", "published-online", "issued", "created"):
+        parts = (message.get(key) or {}).get("date-parts") or []
+        if parts and parts[0] and isinstance(parts[0][0], int):
+            return parts[0][0]
+    return None
+
+
 async def verify_doi(doi: str) -> BenchmarkReference:
     """Check that a DOI resolves to a real work. Raises HttpFailure if neither knows it."""
     clean = normalize_doi(doi)
@@ -44,6 +52,7 @@ async def verify_doi(doi: str) -> BenchmarkReference:
             doi=clean,
             title=titles[0] if titles else "",
             source_url=message.get("URL") or f"https://doi.org/{clean}",
+            publication_year=_crossref_year(message),
             verified_via="crossref",
             verified_at=_now(),
         )
@@ -61,6 +70,7 @@ async def verify_doi(doi: str) -> BenchmarkReference:
             doi=clean,
             title=payload.get("title") or "",
             source_url=payload.get("id") or f"https://doi.org/{clean}",
+            publication_year=payload.get("publication_year"),
             verified_via="openalex",
             verified_at=_now(),
         )

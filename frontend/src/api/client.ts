@@ -30,6 +30,13 @@ import type {
   Split,
   VerifyResponse,
 } from "../types/experiment";
+import type {
+  EvolutionRound,
+  FailureTypeCatalog,
+  RoundSummary,
+  SkillEvent,
+  SkillVersionDetail,
+} from "../types/evolution";
 
 const API_BASE = "/api";
 
@@ -42,7 +49,14 @@ function describeError(detail: unknown, status: number): string {
   }
   if (detail && typeof detail === "object") {
     const obj = detail as Record<string, unknown>;
-    if (typeof obj.message === "string") return obj.message;
+    const reasons = Array.isArray(obj.reasons)
+      ? obj.reasons.filter((r): r is string => typeof r === "string")
+      : [];
+    if (typeof obj.message === "string") {
+      return reasons.length > 0
+        ? `${obj.message}\n${reasons.map((r) => `· ${r}`).join("\n")}`
+        : obj.message;
+    }
     return JSON.stringify(obj);
   }
   return `HTTP ${status}`;
@@ -358,4 +372,84 @@ export async function previewSkillQueries(payload: {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function getSkillVersion(versionId: string): Promise<SkillVersionDetail> {
+  return request(`/skills/versions/${versionId}`);
+}
+
+export async function listSkillEvents(versionId?: string): Promise<{
+  events: SkillEvent[];
+  total: number;
+}> {
+  const suffix = versionId ? `?version_id=${versionId}` : "";
+  return request(`/skills/events${suffix}`);
+}
+
+export async function getPromotionHistory(): Promise<{
+  skill_id: string;
+  events: SkillEvent[];
+  total: number;
+}> {
+  return request("/skills/history");
+}
+
+export async function evaluateSkill(payload: {
+  spec_id: string;
+  split?: Split | null;
+}): Promise<RunResponse & { split: Split | null }> {
+  return request("/skills/evaluate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function promoteSkill(payload: {
+  spec_id: string;
+  version_id: string;
+  decided_by: string;
+}): Promise<{ version: SkillVersion; events: SkillEvent[]; notice: string }> {
+  return request("/skills/promote", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function rollbackSkill(payload: {
+  version_id: string;
+  decided_by: string;
+  reason?: string;
+}): Promise<{ version: SkillVersion; events: SkillEvent[]; notice: string }> {
+  return request("/skills/rollback", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+// ------------------------------------------------------------- evolution engine
+export async function getFailureTypes(): Promise<FailureTypeCatalog> {
+  return request("/evolve/failure-types");
+}
+
+export async function evolveSkills(payload: {
+  spec_id: string;
+  max_candidates?: number;
+  use_llm?: boolean;
+}): Promise<EvolutionRound> {
+  return request("/evolve/skills", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listEvolutionRounds(specId?: string): Promise<{
+  rounds: RoundSummary[];
+  total: number;
+}> {
+  const suffix = specId ? `?spec_id=${specId}` : "";
+  return request(`/evolve/rounds${suffix}`);
+}
+
+export async function getEvolutionRound(roundId: string): Promise<{ round: EvolutionRound }> {
+  return request(`/evolve/rounds/${roundId}`);
 }

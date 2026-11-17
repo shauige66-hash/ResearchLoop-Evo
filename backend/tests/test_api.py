@@ -51,18 +51,13 @@ def test_root():
     assert "ResearchLoop Evo API" in data["name"]
 
 
-def test_future_endpoints_return_501():
-    """Only the phases that are genuinely not implemented may answer 501."""
-    endpoints = [
-        "/api/evolve/skills",
-        "/api/skills/evaluate",
-        "/api/skills/promote",
-    ]
-    for endpoint in endpoints:
-        response = client.post(endpoint)
-        assert response.status_code == 501
-        data = response.json()
-        assert data["detail"]["status"] == "not_implemented"
+def test_evolution_endpoints_are_no_longer_stubs():
+    """Phase 4 replaced the evolution stubs with real, validated endpoints."""
+    assert client.get("/api/evolve/failure-types").status_code == 200
+    for endpoint in ("/api/evolve/skills", "/api/skills/evaluate", "/api/skills/promote"):
+        response = client.post(endpoint, json={})
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["type"] == "missing"
 
 
 def test_experiment_endpoints_are_no_longer_stubs():

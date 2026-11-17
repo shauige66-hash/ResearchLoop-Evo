@@ -10,8 +10,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .api.routes_evolution import router as evolution_router
 from .api.routes_experiments import router as experiments_router
-from .api.routes_future import router_evolve, router_skills
 from .api.routes_gaps import router as gaps_router
 from .api.routes_literature import router as literature_router
 from .api.routes_skills import router as skills_router
@@ -59,8 +59,7 @@ def create_app() -> FastAPI:
     app.include_router(gaps_router)
     app.include_router(experiments_router)
     app.include_router(skills_router)
-    app.include_router(router_evolve)
-    app.include_router(router_skills)
+    app.include_router(evolution_router)
 
     @app.get("/")
     async def root():
