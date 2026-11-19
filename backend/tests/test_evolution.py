@@ -546,6 +546,7 @@ async def test_llm_mode_falls_back_honestly_without_a_provider(temp_db, monkeypa
 @pytest.mark.asyncio
 async def test_llm_reply_is_validated_and_budget_clamped(temp_db, monkeypatch):
     import app.services.evolution as evolution_module
+    import app.services.llm as llm_module
 
     spec, case, base, cand = _setup(temp_db, confirmed=True)
     _store_trial(temp_db, spec, case, arm="baseline")
@@ -598,7 +599,7 @@ async def test_llm_reply_is_validated_and_budget_clamped(temp_db, monkeypatch):
         async def post(self, *a, **k):
             return _Response()
 
-    monkeypatch.setattr(evolution_module.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", _Client)
     proposal, reason = await llm_proposal(temp_db, proposer)
     assert reason == ""
     assert proposal is not None
@@ -634,6 +635,7 @@ async def test_llm_quota_is_enforced(temp_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_malformed_llm_reply_creates_no_candidate(temp_db, monkeypatch):
     import app.services.evolution as evolution_module
+    import app.services.llm as llm_module
 
     spec, case, base, cand = _setup(temp_db, confirmed=True)
     _store_trial(temp_db, spec, case, arm="baseline")
@@ -661,7 +663,7 @@ async def test_a_malformed_llm_reply_creates_no_candidate(temp_db, monkeypatch):
         async def post(self, *a, **k):
             raise RuntimeError("provider unreachable")
 
-    monkeypatch.setattr(evolution_module.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", _Client)
     proposal, reason = await llm_proposal(temp_db, proposer)
     assert proposal is None
     assert "provider unreachable" in reason

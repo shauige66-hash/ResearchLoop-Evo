@@ -10,6 +10,18 @@ import pytest
 from app.models.paper import FieldEvidence, Paper
 
 
+@pytest.fixture(autouse=True)
+def _offline_env(monkeypatch):
+    """Offline tests must not inherit the operator's local .env LLM/gate config.
+
+    Without this, a configured `backend/.env` would turn every "not configured"
+    test into a real-provider test and make the suite depend on local credentials.
+    """
+    for name in list(os.environ):
+        if name.startswith(("RLE_LLM_", "RLE_GATE_")):
+            monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def temp_db():
     """Point the store at a throwaway SQLite file so tests never touch real data."""
@@ -28,6 +40,22 @@ def temp_db():
         store_module._store = None
         os.environ.pop("RLE_DB_PATH", None)
         config_module.get_settings.cache_clear()
+
+
+@pytest.fixture
+def llm_configured(temp_db, monkeypatch):
+    """A configured provider whose only network seam is replaced by a test double.
+
+    The credentials here are fake and test-only; no real API is contacted.
+    """
+    import app.config as config_module
+
+    settings = config_module.get_settings()
+    monkeypatch.setattr(settings, "llm_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "llm_api_key", "test-only-key", raising=False)
+    monkeypatch.setattr(settings, "llm_base_url", "https://fake.invalid/v1", raising=False)
+    monkeypatch.setattr(settings, "llm_model", "fake-model", raising=False)
+    return settings
 
 
 @pytest.fixture

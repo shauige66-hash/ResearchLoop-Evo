@@ -127,6 +127,28 @@ EXPERIMENTABILITY: dict[GapType, Experimentability] = {
         proposed_experiment="Re-run the authors' released artifacts.",
         blocking_reason="Requires artifact availability checks and executing third-party code.",
     ),
+    "coverage": Experimentability(
+        testable_minimally=True,
+        proposed_experiment=(
+            "Measure Reference Coverage@K for the uncovered sub-question against "
+            "human-confirmed reference DOIs under the same retrieval budget."
+        ),
+        required_inputs=["human-confirmed reference DOIs for the sub-question",
+                         "fixed API budget", "topic-grouped splits"],
+    ),
+    "contradiction": Experimentability(
+        testable_minimally=False,
+        proposed_experiment="Reproduce both conflicting results under one shared protocol.",
+        blocking_reason=(
+            "Requires full-text protocols and re-running third-party systems; abstract "
+            "evidence alone cannot adjudicate a contradiction."
+        ),
+    ),
+    "integration": Experimentability(
+        testable_minimally=False,
+        proposed_experiment="Implement and compose the two mechanisms, then evaluate jointly.",
+        blocking_reason="Requires building both mechanisms, outside the minimal experiment budget.",
+    ),
 }
 
 
@@ -226,6 +248,7 @@ def _evidence(papers: list[Paper], fields: tuple[str, ...]) -> list[GapEvidenceI
                         source_url=paper.source_url,
                         field=name,
                         evidence_span=ev.evidence_span,
+                        evidence_source=ev.evidence_source,
                         extraction_method=ev.extraction_method,
                     )
                 )
@@ -411,6 +434,7 @@ class ResearchGapAnalyzer:
                     source_url=p.source_url,
                     field="abstract",
                     evidence_span=(p.abstract or "")[:400],
+                    evidence_source="abstract",
                     extraction_method="heuristic",
                 )
                 for p in papers
@@ -468,6 +492,9 @@ class ResearchGapAnalyzer:
             "reliability": "robustness failure evaluation",
             "efficiency": "cost latency efficiency measurement",
             "reproducibility": "open source artifact reproducibility",
+            "coverage": "survey benchmark coverage sub-question",
+            "contradiction": "conflicting results replication comparison",
+            "integration": "combined framework hybrid integration",
         }[gap_type]
         key = detection_key.strip()
         if key and gap_type == "method":
@@ -568,6 +595,13 @@ class ResearchGapAnalyzer:
             }
             gap.counter_search_errors = [e.model_dump() for e in response.source_errors]
             gap.counter_evidence = found
+            gap.counter_status = (
+                "COUNTER_SEARCH_FAILED"
+                if response.source_errors and not retrieved
+                else "COUNTER_EVIDENCE_FOUND"
+                if found
+                else "NO_COUNTER_EVIDENCE_FOUND"
+            )
             positive = gap.gap_type in ("method", "evaluation")
             label, rationale = _label(positive, len(gap.supporting_papers), len(found))
             gap.confidence_label = label

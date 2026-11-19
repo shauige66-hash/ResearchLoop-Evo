@@ -1,6 +1,6 @@
 # ARCHITECTURE — ResearchLoop Evo
 
-版本：v0.6（Phase 1–6 端到端垂直切片）　日期：2026-11-18
+版本：v0.7（证据锚定的多智能体 Gap Discovery + 反证验证）　日期：2026-11-18
 
 ## 1. 能力核实结论（决定架构的前置事实）
 
@@ -31,7 +31,8 @@
 │                FastAPI 后端 (Python 3.13, 本地运行)                    │
 │                                                                       │
 │  api/  routes_literature · gaps · experiments · skills · evolution    │
-│        routes_workflows        参数校验 · 运行记录 · 错误聚合          │
+│        routes_workflows · gap_pipeline(含 /api/llm)                   │
+│        参数校验 · 运行记录 · 错误聚合                                  │
 │                                                                       │
 │  services/workflow.py    18 步编排器（有界推进 · 落盘恢复 · 人工门禁）  │
 │    │                                                                  │
@@ -43,7 +44,11 @@
 │    │    ├─ rank.py       相关性 + 综述优先 + 年份衰减（稳定排序）       │
 │    │    └─ extract.py    摘要证据化启发式抽取（10 字段）                │
 │    ├─ classify.py        有序方法分类                                  │
-│    ├─ gap.py             多论文比较 → 6 类空白 + 三源反证检索           │
+│    ├─ gap.py             多论文比较 → 9 类空白 + 三源反证检索           │
+│    ├─ llm.py             唯一 OpenAI-compatible Provider：审计/预算/缓存 │
+│    ├─ gap_agents.py      四角色 prompt + 逐字 span 校验                  │
+│    ├─ gap_pipeline.py    七阶段编排（落盘 · 可恢复 · 预算停止）          │
+│    ├─ gap_validator.py   独立 Python 验证 + 可配置最终门禁               │
 │    ├─ benchmark.py       DOI 元数据核验 + 按主题分组切分                │
 │    ├─ experiment.py      两臂真实执行 + 原始响应快照                    │
 │    ├─ evaluator.py       独立评测 + 六条晋升门禁（纯 Python）           │
@@ -52,15 +57,18 @@
 │    ├─ report.py          7 节报告（事实/作者观点/系统推断分离）         │
 │    └─ export.py          CSV / JSON                                   │
 │                                                                       │
-│  storage/store.py        SQLite 12 张表（见 §3.3）                     │
+│  storage/store.py        SQLite 17 张表（见 §3.3）                     │
 │  var/experiments/*.json  每次实验运行的原始响应快照                     │
 └──────────────────────────────┬────────────────────────────────────────┘
                                │ HTTPS
                   OpenAlex · Crossref · arXiv（公开学术 API）
+                  + 可选：服务端环境变量配置的 OpenAI-compatible LLM endpoint
 ```
 
-**全程零 LLM 依赖**：抽取、分类、空白发现、失败诊断、候选提议、评测、报告都是确定性代码，
-可单测、可复现、零模型额度消耗。LLM 是默认关闭的可选扩展（§6）。
+**默认零 LLM 调用**：抽取、分类、规则式空白发现、失败诊断、候选提议、评测、报告都是确定性代码，
+可单测、可复现、零模型额度消耗。配置 Provider 后，LLM 只负责**跨论文理解与提出候选**，
+验证仍由 Python 与真实文献检索完成——**不让 LLM 自己证明自己正确**（§6）。
+未配置时显式返回 `LLM_NOT_CONFIGURED`，绝不伪造 LLM 运行结果。
 
 ## 3. 数据模型
 
@@ -103,7 +111,7 @@ language, retrieved_at, run_id, duplicate_of`。
   LLM 抽取器必须翻转该常量并把每个字段的 `extraction_method` 设为 `"llm"`，
   UI 才不会宣称一个没跑过的模式。
 
-### 3.3 SQLite 表（12 张，全部 `CREATE TABLE IF NOT EXISTS` + JSON blob）
+### 3.3 SQLite 表（17 张，全部 `CREATE TABLE IF NOT EXISTS` + JSON blob）
 
 ```
 projects(id, topic, field, created_at, updated_at)
@@ -123,11 +131,23 @@ skill_events(id, version_id, event, detail, created_at)
 evolution_rounds(round_id, spec_id, parent_version_id, json, created_at)
 
 workflows(workflow_id, topic, status, current_step, json, created_at, updated_at)
+
+llm_calls(request_id, agent_role, provider, model, status, pipeline_id, paper_id,
+          prompt_version, prompt_hash, response_hash, latency_ms,
+          prompt_tokens, completion_tokens, total_tokens, error, created_at)
+llm_cache(cache_key, agent_role, model, prompt_version, content, created_at)
+evidence_cards(paper_id, prompt_version, pipeline_id, abstract_hash, json, created_at)
+gap_pipelines(pipeline_id, topic, run_id, workflow_id, status, current_stage, json, created_at, updated_at)
 ```
 
 索引：`papers(run_id/project_id/publication_year/doi)`、`gaps(run_id/status)`、
 `benchmark_cases(split)`、`experiment_runs(spec_id/case_id)`、
-`skill_versions(skill_id,status)`、`evolution_rounds(spec_id)`。
+`skill_versions(skill_id,status)`、`evolution_rounds(spec_id)`、
+`llm_calls(agent_role/pipeline_id)`、`evidence_cards(pipeline_id)`、`gap_pipelines(workflow_id)`。
+
+`llm_calls` 只存 hash 与计量，**没有 prompt/response 正文列，也没有 key 列**。
+`evidence_cards` 主键是 `(paper_id, prompt_version)`，因此同一篇论文在同一 prompt 版本下
+只付一次费；复用时卡片保留**最初付费的 pipeline_id**。
 
 注意：`experiment_runs.split` 是**独立列**，不在序列化 JSON 中；
 `EvaluationReport` 的字段名是 `coverage_at_k`（不是 `reference_coverage_at_k`）。
@@ -142,11 +162,18 @@ counter_evidence, closest_related_work, unresolved_question, experimentability,
 confidence_label, status
 ```
 
-- `gap_type` ∈ method / evaluation / generalization / reliability / efficiency / reproducibility。
+- `gap_type` ∈ method / evaluation / generalization / reliability / efficiency / reproducibility /
+  coverage / contradiction / integration（后三类由 LLM pipeline 引入，旧六类保持不变）。
 - `status` 默认 `needs_human_review`；只有人工接受后才进入实验设计。
 - `confidence_label` 只有 Low / Medium / High + `confidence_rationale` 文字理由，**不是概率**。
 - `counter_search_scope` 记录来源、请求数、缓存命中、检索到的条数、被判定"未回应该主张"的条数
   与接受规则；没找到反证时只表述"当前检索范围内未发现"。
+- `counter_status` ∈ NOT_RUN / COUNTER_EVIDENCE_FOUND / NO_COUNTER_EVIDENCE_FOUND /
+  COUNTER_SEARCH_FAILED。**检索失败绝不等于没有反证**；升级前写入的旧记录若已存有真实反证，
+  读取时由模型校验器推导为 COUNTER_EVIDENCE_FOUND，不再误报 NOT_RUN。
+- LLM pipeline 追加的字段（`discovery_mode`、`pipeline_id`、`candidate`、`critique`、
+  `validation`、`gate`、`prior_art`、`novelty_risk`）是**纯增量**：规则式空白留空，
+  下游任何逻辑都不依赖它们。`novelty_risk` 只有 LOW / MEDIUM / HIGH，不出现概率数字。
 
 ### 3.5 BenchmarkCase 与两步 Ground Truth
 
@@ -203,15 +230,56 @@ memory-augmented agent → retrieval-augmented generation → …
 
 定位是**证据导航**而非学术结论：挑出最相关句子并保留原文，让研究者判断该行是否值得细读。
 
-## 6. 可选 LLM 增强（默认关闭）
+## 6. LLM 增强（默认关闭；未配置即 `LLM_NOT_CONFIGURED`）
 
-- `HeuristicExtractor`（默认，零成本，离线）
-- `RemoteLLMExtractor`（需服务端 `.env` 显式开启 + provider 与 key）
+Paper 字段抽取**始终是确定性的**：`EXTRACTION_MODE = "heuristic"`，`extract.py` 的结果
+不会被任何模型输出覆盖或回写。LLM 只出现在两条受控路径上。
 
-强制约束：LLM 输出必须过 Pydantic 校验，`evidence_span` 必须是输入摘要中的**逐字片段**，
-不在原文中即丢弃并记 `rejected_span`；必须翻转 `EXTRACTION_MODE` 并标注 `extraction_method="llm"`。
-候选提议器的 LLM 路径每轮**最多 1 次调用**，失败回退到确定性提议并写明原因。
-开关关闭时任何请求都不会触达模型。Key 只存在于服务端环境变量，不进前端。
+### 6.1 多智能体 Gap Pipeline
+
+`services/llm.py`（唯一 Provider）+ `gap_agents.py`（角色 prompt 与逐字校验）+
+`gap_pipeline.py`（七阶段编排）+ `gap_validator.py`（纯 Python 验证与门禁）。
+
+```
+planner → selection(Python) → literature_analysis → gap_analysis
+        → gap_critic → counter_evidence → validation(Python)
+```
+
+- **Evidence Card**：Literature Analyst 每篇产出七字段卡片，单独存于 `evidence_cards`，
+  **不回写 Paper 字段**。`evidence_source` 固定 `abstract`——只有摘要时系统不声称读过全文。
+- **逐字校验**：每个 claim 的 `evidence_span` 必须能在**实际送入模型的摘要**中定位
+  （容忍 whitespace 重排，定位后存原文片段）；定位失败 → 丢弃并记入 `rejected_fields`，
+  绝不作为事实入库。无摘要的论文直接拒绝产卡，不触达模型。
+- **Critic 隔离**：只看到 claim 与引用证据，看不到 Gap Agent 的推理；四项评分是 0~5 整数，
+  风险是 LOW/MEDIUM/HIGH，**不输出百分比或伪精度概率**。
+- **独立门禁**：`gap_validator.py` 重新核对论文是否真实存在、证据引用是否可核验、是否重复计数
+  （含跨来源同 DOI）、DOI 是否规范、反证检索是否完成、prior art 碰撞、novelty/contradiction
+  风险与 Critic 阈值。命中高度相关 prior art → `novelty_risk = HIGH` 并列出 `potential_prior_art`，
+  不会直接 Accepted。最终状态只有 `accepted / needs_human_review / rejected`；
+  通过门禁只表示"在当前检索范围内达到配置阈值"，**不是创新性的数学证明**。
+- **反证检索**复用既有 `gap.py` 的真实三来源检索；`COUNTER_SEARCH_FAILED` 与
+  `NO_COUNTER_EVIDENCE_FOUND` 严格区分，检索失败不能替空白"洗白"。
+
+### 6.2 技能变异提议器
+
+`services/evolution.py: llm_proposal`：每轮**最多 1 次**调用，Pydantic 校验，
+未配置/超限额/失败/与父版本相同 → 回退确定性提议并写明 `llm_skip_reason`。
+
+### 6.3 强制约束
+
+- Key 只来自服务端环境变量（`RLE_LLM_ENABLED` / `RLE_LLM_API_KEY` / `RLE_LLM_BASE_URL` /
+  `RLE_LLM_MODEL`），**不进数据库、日志、前端、Git**；异常文本在落盘前做 redaction。
+- 每次调用都审计：agent_role、provider、model、request_id、时间、latency、成功/失败、
+  token（若 provider 返回）、prompt hash、response hash；**不保存 prompt 正文**。
+- 预算：`RLE_LLM_MAX_CALLS` 总额 + 每角色上限（planner 2 / analyst 30 / gap analyst 2 /
+  critic 5 / counter query 5）。角色预算按**安装全局**计数，因此一轮真实管线跑完后，
+  第二条真实管线需要先调高对应角色上限（本轮的 18 步 Workflow 真实链路即因此 NOT RUN）。
+  真实调用（含 failed 与 output_rejected）计数，缓存命中免费；
+  超预算 → 停止并置 `awaiting_budget`，已完成产物保留，resume 不重复付费。
+- 缓存键 = role + model + prompt_version + prompt hash；schema 校验失败的回复**不入缓存**。
+- 未配置 → `LLM_NOT_CONFIGURED`，不产生任何伪造 LLM 结果；18 步 Workflow 回退到确定性
+  Gap 比较器并记录 `fallback_reason`。
+- `FakeLLMProvider` 只用于 unit / integration tests，绝不写入真实 run / experiment / promotion 证据。
 
 ## 7. 实验与评测（独立、可复现）
 
@@ -304,6 +372,18 @@ promotion_decision* → research_dossier
   基线、参考集合、来源、年份、Top-K、上限与评分公式完全不变。
 - 晋升被拒是**被记录的结果**（`outcome="refused"` + 全部原因）而非杀死流程的异常，
   档案因此能如实写出 `acceptance_status`。
+- **LLM 以可恢复子阶段接入，18 个 step id 与既有确定性服务一个都没删**：
+  第 2 步创建 `gap_pipeline` 并跑 planner（planner 查询最多取 2 条并入第 3 步真实检索）；
+  第 4 步在启发式抽取审计之外附加 Evidence Card 统计；第 6 步推进到 `gap_critic`，
+  优先使用 pipeline 已落盘的空白（`discovery_mode="llm_pipeline"`），
+  未配置 / 无候选 / 候选无法投影时回退确定性比较器并写明 `fallback_reason`；
+  第 7 步推进到 `validation`，只对仍为 `NOT_RUN` 的空白跑反证检索。
+- 每个 LLM 阶段的产物都落盘，`advance` 遇 `awaiting_budget` 与 `awaiting_human` 一样立即停止；
+  预算耗尽或 provider 未配置**不计入阶段重试次数**，修好后 resume 不会撞上重试上限，
+  也不会把前面已付费的调用重跑一遍。planner 失败被标 `skipped`，检索照常进行。
+- 第 18 步档案新增 `llm` 块：configured/status/provider/model/预算与用量/各角色用量/
+  失败数/token/卡片数/审计入口，以及每条空白的 `discovery_mode`、`counter_status`、
+  `novelty_risk`、`gate_status`、`validation_passed`。
 
 ## 10. API 设计
 
@@ -322,6 +402,9 @@ promotion_decision* → research_dossier
 | GET | `/api/gaps` · `/api/gaps/{id}` | 列表 / 详情（含 reviews） |
 | PATCH | `/api/gaps/{id}` | 人工接受 / 拒绝 / 编辑 |
 | POST | `/api/gaps/{id}/counter-search` | 重跑三源反证检索 |
+| POST | `/api/gap-pipeline/start` · `/{id}/advance` | 启动 / 有界推进七阶段（`max_stages` 1..7，可 `from_stage`） |
+| GET | `/api/gap-pipeline` · `/{id}` | 列表（可按 workflow 过滤）/ 详情（含卡片、空白、审计与用量） |
+| GET | `/api/llm/status` · `/api/llm/calls` | 配置与预算状态 / 调用审计（只有 hash 与计量） |
 | GET | `/api/experiments/templates` | 唯一模板：Agent 进化相关假设 |
 | GET/POST | `/api/experiments/benchmark/cases` | 基准列表 / 新建（真实 DOI 核验） |
 | POST | `/api/experiments/benchmark/cases/{id}/references` · `/confirm` | 追加 / 人工确认参考 |
@@ -346,8 +429,12 @@ promotion_decision* → research_dossier
 - 路由：`react-router-dom` 7，**11 个真实页面**共用同一侧边导航，无占位页。
 - 状态：无 Redux；每页局部 `useState` + 统一 `guard()` 包装（busy / error / message），
   错误态真实展示服务端 `detail` 与逐条 `reasons`。
-- 类型：`src/types/{paper,gap,experiment,evolution,workflow}.ts` 与后端 Pydantic 模型手工对齐。
+- 类型：`src/types/{paper,gap,gapPipeline,experiment,evolution,workflow}.ts` 与后端 Pydantic 模型手工对齐。
   `StepOutputs` 是**全可选的扁平接口**（各步写入的键互不冲突）。
+- Research Gap 页展示**完整证据链**而非一个分数：`components/gap/EvidenceChain.tsx`
+  按 ① LLM 候选 ② Critic 评分 ③ Python 验证 ④ 反证与 prior art ⑤ 最终门禁 五段展开，
+  规则式空白显式标注"无 LLM 链"；`EvidenceCards.tsx` 展示逐字 span、`evidence_source=abstract`
+  与被拒字段；`PipelinePanel.tsx` 展示 provider/预算/各角色用量、七阶段状态、Resume 与审计。
 - 图表：Recharts 用于既有页面的年份分布与来源占比；
   **新增页面（Workflow / Dossier）一律用按真实数值比例绘制的 CSS 条 + 表格**，
   因为应用内浏览器视口塌陷（`innerWidth === 0`）导致 `ResponsiveContainer` 不挂载 SVG surface。
@@ -368,7 +455,8 @@ promotion_decision* → research_dossier
 | 礼貌池 | `mailto` 参数注入 OpenAlex/Crossref 请求 |
 | 可观测 | 每 run 记录耗时、缓存命中、来源错误；实验保留原始响应快照；日志仅 stdout |
 | 隐私 | 只存书目元数据与公开摘要，不存用户身份信息 |
-| 测试 | **235 个离线测试**（patch 在使用点，不联网）+ **3 个真实 API 测试**（`RLE_LIVE_TESTS=1`，强制 `refresh=True`，autouse fixture 在本 loop 上关闭共享客户端） |
+| 测试 | **304 个离线测试通过 + 3 个 live 测试默认跳过**（patch 在使用点，不联网；autouse fixture 剥离本地 `.env` 的 LLM/gate 配置，保证离线套件不受真实凭据影响）；live 测试需 `RLE_LIVE_TESTS=1`，强制 `refresh=True`，autouse fixture 在本 loop 上关闭共享客户端 |
+| LLM 可观测 | 每次调用一行审计（hash + 计量 + 状态），预算与缓存命中分开计数；未配置时显式 `LLM_NOT_CONFIGURED`，不伪造结果 |
 
 ## 13. 尚未完成 / 演进路径
 
@@ -377,6 +465,10 @@ promotion_decision* → research_dossier
 | 人工确认参考集合 | ⬜ **待人工标注** | 需要独立来源的参考 DOI，剔除派生重叠与 Crossref 组件记录 |
 | 锁定候选 → holdout 终检 → 真实晋升 | ⬜ 仅有离线测试覆盖 | 参考集合确认后在 Experiment Lab 中人工完成 |
 | 成功回滚的真实演示 | ⬜ 真实库中无 archived 版本 | 先有一次真实晋升 |
-| LLM 提议器真实 Provider 运行 | ⬜ 服务端未配置 Key | 用户确认额度后配置环境变量 |
+| LLM 真实 Provider 运行（Gap Pipeline） | ✅ **REAL**（2026-11-18）：DeepSeek `deepseek-flash`，7 阶段全部 completed；34/60 次调用、104,511 tokens、1 次 schema 拒绝未缓存 | 模型名以 `GET /models` 实测为准（该账号为 `deepseek-flash` / `deepseek-v4-pro`，无 `deepseek-chat`） |
+| 真实 LLM E2E 的 20+ 论文规模 | ✅ **REAL**：30 篇检索（29 篇有摘要，2023–2026）、20 张 Evidence Card、5 条候选 Gap | OpenAlex 一次查询 HTTP 429 已如实记录为 source error；Crossref/arXiv 该组查询贡献 0 篇 |
+| LLM 证据链 UI 的真实数据渲染 | ✅ **REAL**：浏览器核对 5 条真实 Gap 的五段证据链与 Dossier 旧档案回退 | 旧档案缺 `llm` 块曾导致页面崩溃，已修复并复核 |
+| 18 步 Workflow 的真实 LLM 全链路 + 真实人工确认 | ⬜ **NOT RUN**：角色预算用尽（planner 2/2、gap 2/2、critic 5/5、counter 5/5，总额 34/60）；5 条 Gap 等人工决定 | 调高对应角色上限或换一次预算授权后，从 `human_approval` 起接续；不代签、不伪造 |
+| Gap 提出依据单独落库（`novelty_rationale`） | ✅ 已完成：真实运行暴露 `novelty_risk` 枚举被写入 prose 导致拒绝，新增字段 + 严格校验回归测试 | —— |
 | 正式部署 | ⬜ 本轮不做 | 前端可静态托管；后端需另行确认低成本常驻方案（Sites 无常驻 Python 运行时） |
 | `run_papers` 关联表 | ⬜ 已定位根因，未修 | `papers` upsert 覆盖 `run_id`，跨 run 共享论文按 run 过滤会少显示；workflow context 不受影响 |

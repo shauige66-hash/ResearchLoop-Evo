@@ -82,6 +82,7 @@ HUMAN_STEPS: frozenset[str] = frozenset({"human_approval", "promotion_decision"}
 # redo cannot silently reuse an upstream decision (e.g. a stale gap approval).
 STEP_CONTEXT_KEYS: dict[str, tuple[str, ...]] = {
     "research_topic": ("project_id",),
+    "search_planning": ("gap_pipeline_id",),
     "literature_discovery": ("literature_run_id", "paper_ids"),
     "gap_discovery": ("gap_ids",),
     "human_approval": (
@@ -103,9 +104,9 @@ STEP_CONTEXT_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 StepStatus = Literal[
-    "pending", "running", "completed", "failed", "awaiting_human", "skipped"
+    "pending", "running", "completed", "failed", "awaiting_human", "awaiting_budget", "skipped"
 ]
-WorkflowStatus = Literal["running", "awaiting_human", "completed", "failed"]
+WorkflowStatus = Literal["running", "awaiting_human", "awaiting_budget", "completed", "failed"]
 
 TERMINAL_STEP_STATES: frozenset[str] = frozenset({"completed", "skipped"})
 

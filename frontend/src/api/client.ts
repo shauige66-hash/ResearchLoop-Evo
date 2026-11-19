@@ -14,6 +14,14 @@ import type {
   ResearchGap,
 } from "../types/gap";
 import type {
+  GapPipelineRun,
+  LLMCallRecord,
+  LLMUsageSummary,
+  PipelineDetail,
+  PipelineResponse,
+  StageId,
+} from "../types/gapPipeline";
+import type {
   Arm,
   BenchmarkCase,
   BenchmarkCaseResponse,
@@ -212,6 +220,62 @@ export async function rerunCounterSearch(
   topK = 10
 ): Promise<ResearchGap> {
   return request(`/gaps/${gapId}/counter-search?top_k=${topK}`, { method: "POST" });
+}
+
+// ------------------------------------------------- multi-agent gap pipeline
+export async function startGapPipeline(
+  payload: {
+    topic: string;
+    run_id?: string;
+    paper_ids?: string[];
+    workflow_id?: string;
+    max_papers?: number;
+    max_gaps?: number;
+    run_counter_search?: boolean;
+  },
+  maxStages = 7
+): Promise<PipelineResponse> {
+  return request(`/gap-pipeline/start?max_stages=${maxStages}`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function advanceGapPipeline(
+  pipelineId: string,
+  payload?: { max_stages?: number; from_stage?: StageId }
+): Promise<PipelineResponse> {
+  return request(`/gap-pipeline/${pipelineId}/advance`, {
+    method: "POST",
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+export async function listGapPipelines(
+  workflowId?: string
+): Promise<{ pipelines: GapPipelineRun[]; total: number }> {
+  const query = workflowId ? `?workflow_id=${encodeURIComponent(workflowId)}` : "";
+  return request(`/gap-pipeline${query}`);
+}
+
+export async function getGapPipeline(pipelineId: string): Promise<PipelineDetail> {
+  return request(`/gap-pipeline/${pipelineId}`);
+}
+
+export async function getLLMStatus(): Promise<LLMUsageSummary> {
+  return request("/llm/status");
+}
+
+export async function listLLMCalls(params?: {
+  pipeline_id?: string;
+  agent_role?: string;
+  limit?: number;
+}): Promise<LLMCallRecord[]> {
+  const searchParams = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) searchParams.append(key, String(value));
+  });
+  return request(`/llm/calls?${searchParams.toString()}`);
 }
 
 // ------------------------------------------------------------- experiment lab

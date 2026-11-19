@@ -321,6 +321,106 @@
       档案 `acceptance_status = awaiting_reference_set`
 - [x] **不宣称自进化实验已通过最终验收**
 
+## Phase 8 · 证据锚定的多智能体 Gap Discovery（代码、离线 E2E 与真实 7 阶段管线均已跑通；18 步 Workflow 真实链路 = NOT RUN）
+
+目标：把"确定性检索 + 规则式 Gap Discovery + 可选 LLM proposer"升级为
+**Evidence-grounded Multi-Agent Research Gap Discovery + Counter-Evidence Verification**，
+建立在既有 18 步 Workflow 与实验/评测/进化基础设施之上。原则：**LLM 提出与评审，Python 与真实检索验证**。
+
+### 交付清单（逐项对应任务书 §22）
+
+- [x] OpenAI-compatible LLM Provider（`services/llm.py`，唯一网络接缝 `_post`）
+- [x] Research Planner Agent（多角度检索计划，Schema + Budget 校验）
+- [x] Literature Analyst Agent（逐论文 Evidence Card，7 个字段全部带 span/source）
+- [x] Research Gap Analyst Agent（只吃 Evidence Cards，跨论文综合 → Candidate Gap）
+- [x] Gap Critic / Judge Agent（**看不到 Gap Agent 内部推理**，0~5 分 + LOW/MEDIUM/HIGH）
+- [x] Python Gap Validator（`services/gap_validator.py`，12 项证据/反证检查 + 5 项 Critic 门禁 + 可配置阈值）
+- [x] Counter-Evidence 真正参与验证（区分 `NO_COUNTER_EVIDENCE_FOUND` / `COUNTER_SEARCH_FAILED`）
+- [x] Checkpoint / Resume（7 阶段产物落盘 `gap_pipelines.json`，resume 不重复付费）
+- [x] LLM call budget（总额 `RLE_LLM_MAX_CALLS` + 每角色上限；超额 → `awaiting_budget`）
+- [x] Evidence traceability（span 必须逐字命中送入模型的摘要，否则进 `rejected_fields`）
+- [x] Human Gate（保留原门禁；页面展示证据链而非单一分数）
+- [x] Research Gap UI（Topic → Plan → Paper Evidence → Gaps → Critique → Counter → Validation → Decision）
+- [x] Unit tests / Integration tests（新增 5 个测试模块 + `tests/fakes.py`）
+- [x] Build succeeds（`tsc -b && vite build`）
+- [x] **真实 LLM E2E（7 阶段管线）= REAL**（2026-11-18，DeepSeek `deepseek-flash`，详见下节）
+- [ ] 18 步 Workflow 的真实 LLM 全链路 + 真实人工确认 = **NOT RUN**（角色预算用尽；5 条 Gap 等人工决定）
+
+### 真实性标注
+
+| 项 | 标注 | 依据 |
+| --- | --- | --- |
+| 四角色编排、逐字 span 校验、Critic 隔离、预算停止、resume、缓存、审计 redaction、独立门禁 | **MOCK（仅测试库）** | `FakeLLMProvider` 只替换 `_post`，结果只写入 `temp_db`，绝不进真实 run/experiment/promotion |
+| 真实模型 completion 调用 | **REAL = 34 次**（含 1 次 schema 拒绝），0 缓存命中 | `llm_calls` 34 行，provider `deepseek`、model `deepseek-flash`；tokens 19,655 + 84,856 = **104,511** |
+| LLM Evidence Card | **REAL = 20 张**（20/20 选定论文） | 259.4 s；span 全部逐字命中摘要，`evidence_source=abstract` |
+| LLM Candidate Gap | **REAL = 5 条**（evaluation×3、integration×1、method×1） | 全部 `needs_human_review`，0 条自动接受 |
+| LLM Critique | **REAL = 5 次** | 四项 0–5 整数分，`recommended_action` 全为 `revise`，无百分比 |
+| 真实反证检索（LLM 生成查询） | **REAL = 17 次请求 / 5 条 Gap** | 5 个查询/条 × 3 家来源；48 篇检索结果，16 篇被判为 prior art |
+| Python 独立校验 | **REAL = 17 项 × 5 条** | 逐字命中、无重复计数、反证检索完成等硬检查全部 PASS |
+| 真实论文 | **REAL = 87 + 30 篇**（22 + 1 个 run） | 全部来自 OpenAlex / Crossref / arXiv，无硬编码 |
+| 规则式空白 | **REAL = 18 条**（accepted 3 / needs_human_review 12 / rejected 3） | 3 条 accepted 带真实人工决策备注 |
+| 18 步 Workflow 两条完整流程 | **REAL**（规则式路径） | 均走到 `research_dossier`；晋升被 6 条门禁正确拒绝，Active 仍为 v1 |
+| 18 步 Workflow 的真实 LLM 全链路 / 真实人工确认 | **NOT RUN** | 角色预算用尽；5 条真实 Gap 等人工决定 |
+
+### 真实 E2E 记录（2026-11-18）
+
+- **Provider / 模型**：DeepSeek，`https://api.deepseek.com`，`deepseek-flash`
+  （`GET /models` 实测返回 `deepseek-flash`、`deepseek-v4-pro`；该账号**没有** `deepseek-chat`）。
+- **管线**：`gpipe_2f3cdb1cb3bd`（真实 run `run_1794985534678`），7 阶段全部 `completed`。
+- **检索输入（已声明，未调整排序器）**：topic `LLM agent memory mechanisms`；
+  关键词 `LLM agent memory` / `large language model agent memory` / `agent memory management` /
+  `long-term memory for LLM agents` / `llm` / `agent`；`year_from=2022`；三源；26 次真实请求、2 次缓存命中、40.7 s。
+  结果 **30 篇、29 篇有摘要、2023–2026，全部来自 OpenAlex**；
+  OpenAlex 对 `agent memory management` 返回 **HTTP 429**（3 次尝试）并如实记入 `source_errors`，
+  Crossref / arXiv 对该组查询贡献 0 篇。20 篇中有 6 篇标题为 survey/review
+  （Provider 元数据 `is_review` 全为 false，因此**不宣称**来源标注为综述）。
+- **用量**：34 / 60 次真实调用（planner 2、analyst 20、gap 2、critic 5、counter 5），1 次失败（schema 拒绝，未缓存），
+  104,511 tokens；Key 未进入数据库 / 日志 / 前端 / Git。
+- **Gap 结论（REAL，且系统没有给自己开门）**：5 条全部 `needs_human_review`：
+  - `gap_…_0`：支持论文 2 < 3；Critic 证据分 2/5、跨论文支持 2/5 → 不通过
+  - `gap_…_1`：真实 prior art 冲突 **10 篇** + novelty_risk HIGH（门禁上限 MEDIUM）→ 不通过
+  - `gap_…_2` / `_3`：prior art 各 1 篇、Critic 2/5 → 不通过
+  - `gap_…_4`：支持论文 2 < 3、prior art 4 篇、跨论文支持 2/5 → 不通过
+  - 反证状态：1 条 `NO_COUNTER_EVIDENCE_FOUND`、4 条 `COUNTER_EVIDENCE_FOUND`；0 条被当作检索失败
+- **审计产物**：`backend/var/real_e2e_dossier.json`（服务端返回的 pipeline + cards + gaps + llm_calls + usage）
+  经 `var/verify_real_dossier.py` 对照 §19 十问逐项核查：**136 项断言全部通过**（含每条 span 逐字命中摘要、
+  DOI 存在、三源范围、Critic 0–5、17 项 Python 校验、无自动接受、payload 内无凭据）。
+
+### 真实 LLM 排障记录（已解决）
+
+- 第一次 `GET /models` 为 **HTTP 401**：用户先给的是 36 字符 UUID（DeepSeek Key 应为 `sk-` 开头）；
+  换有效 `sk-` Key 后 **HTTP 200**。401 期间未发起任何 completion，未消耗额度。
+- 曾误判 `deepseek-flash` 不是公开模型名——实为错误，已按 `/models` 结果更正（见上）。
+- 角色预算全局计数：第二轮真实管线在 `research_planner`（1/1）处停止为 `awaiting_budget`；
+  经用户同意把 planner 提到 2 后 resume 同一管线，已完成的 20 张卡片没有重付费。
+- 真实运行暴露并修复的缺陷：Gap Analyst 把依据写进 `novelty_risk`（`"MEDIUM: …"`）→ schema 拒绝、
+  未缓存。**没有放宽校验**：新增 `novelty_rationale` 字段、改 prompt 与输出契约，
+  并加 2 个离线回归测试（prose 仍被拒绝；依据随标签落库）。
+- 本机 `NO_PROXY` 含 `[::1]` 会让默认 httpx 抛 `InvalidURL: Invalid port`；
+  `services/llm.py` 客户端用 `trust_env=False`，文献源侧用 `build_proxy_mounts()` 校验，均不受影响。
+- `.env` 末尾是用户覆盖块，与模板同名重复；`load_dotenv()` **后值生效**：
+  `ENABLED=1` / `BASE_URL=https://api.deepseek.com` / `MODEL=deepseek-flash` / `MAX_CALLS=60` / planner 2。
+
+### 凭据处置记录
+
+- 发现用户把真实 Key 追加进了 **Git 跟踪的 `backend/.env.example`**。核查确认**从未进入任何 commit**、暂存区为空。
+- 已把凭据块移入 **gitignored `backend/.env`**（写入过程不回显 Key），模板恢复为纯文档。
+- 复扫用**字节精确匹配**（Python 读取 `.env` 最后一个有效值）覆盖：整棵工作树（含 `dist/`、`var/` 缓存与快照）、
+  `git ls-files` 全部跟踪文件、`git log -p --all`、`git diff HEAD`、SQLite 每张表每个文本列 →
+  **命中数全为 0，Key 仅存在于 `backend/.env`**。
+  （早先用 shell `grep -F "$KEY"` 的扫描因 `.env` 重复键使变量含换行、退化为空模式而无效，已作废并重做。）
+- 持久化的错误字符串同样过 `_redact`，避免 Key 经异常消息落库。
+
+### 本轮其它修正
+
+- `models/gap.py`：旧记录缺 `counter_status` 却持有真实反证 → 派生为 `COUNTER_EVIDENCE_FOUND`，
+  不再把已完成的检索误报为 `NOT_RUN`；workflow 第 7 步据此跳过已检索空白。
+- `tests/conftest.py`：新增 autouse `_offline_env`，剥离本机 `.env` 的 `RLE_LLM_*` / `RLE_GATE_*`，
+  保证离线测试在配置了真实 Key 的机器上仍然确定。
+- 删除临时验证产物 `frontend/vite.config.verify.ts` 与临时服务；未触碰用户既有 8000/5173 服务。
+- README / ARCHITECTURE 更正：删除 `RemoteLLMExtractor` 的过度声明，补 17 张表、四角色、
+  审计/预算/缓存语义与 NOT RUN 边界。（真实 E2E 跑通后，这三处边界已改写为 REAL 记录，见上。）
+
 ## 明确不做（避免范围蔓延）
 
 - ❌ 向量数据库、Redis、Kubernetes、微服务拆分

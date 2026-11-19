@@ -24,7 +24,6 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
@@ -45,6 +44,7 @@ from ..models.skill import SKILL_ID, SearchStrategy, SkillVersion, plan_queries
 from ..storage.store import Store
 from .evaluator import MAX_REQUEST_RATIO
 from .experiment import effective_years
+from .llm import LLMError, LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -687,41 +687,29 @@ async def llm_proposal(
         proposer.parent.version_id, "llm_call", {"purpose": "candidate_proposal", "call_index": used + 1}
     )
     try:
-        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
-            response = await client.post(
-                settings.llm_base_url.rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-                json={
-                    "model": settings.llm_model,
-                    "temperature": 0,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You mutate a literature search strategy. Reply with JSON only: "
-                                '{"strategy": {...}, "mutation_description": "..."}. Change only '
-                                "the evolvable components. Do not exceed affordable_query_count."
-                            ),
-                        },
-                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                    ],
-                },
-            )
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            reply = _LLMStrategyReply.model_validate_json(content)
-    except Exception as exc:
-        reason = f"LLM proposer failed ({type(exc).__name__}: {exc}); the deterministic proposer ran instead"
+        reply = await LLMProvider(store).complete(
+            "candidate_proposer",
+            (
+                "You mutate a literature search strategy. Reply with JSON only: "
+                '{"strategy": {...}, "mutation_description": "..."}. Change only '
+                "the evolvable components. Do not exceed affordable_query_count."
+            ),
+            json.dumps(payload, ensure_ascii=False),
+            schema=_LLMStrategyReply,
+            prompt_version="skill-mutation-v1",
+        )
+    except LLMError as exc:
+        reason = f"LLM proposer failed ({exc}); the deterministic proposer ran instead"
         logger.warning(reason)
         return None, reason
 
-    strategy = proposer._budgeted(reply.strategy.model_copy(deep=True))
+    strategy = proposer._budgeted(reply.parsed.strategy.model_copy(deep=True))
     changes = strategy_diff(proposer.parent.strategy, strategy)
     if not changes:
         return None, "the LLM returned a strategy identical to its parent; no candidate was created"
     proposal = proposer._build(
         strategy,
-        reply.mutation_description,
+        reply.parsed.mutation_description,
         {d.failure_type for d in proposer.diagnoses},
         changes,
         "quota-limited LLM reflection over development diagnoses, validated by Pydantic",

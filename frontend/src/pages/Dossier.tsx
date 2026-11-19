@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { generateReport, getWorkflowDossier, listWorkflows } from "../api/client";
+import { generateReport, getGap, getWorkflowDossier, listWorkflows } from "../api/client";
+import EvidenceChain from "../components/gap/EvidenceChain";
+import type { ResearchGap } from "../types/gap";
 import type { ReportResponse } from "../types/paper";
 import type { Dossier as DossierData, WorkflowRun } from "../types/workflow";
 import {
@@ -137,6 +139,31 @@ function ComparisonBars({ dossier }: { dossier: DossierData }) {
   );
 }
 
+function GapChain({ gapId }: { gapId: string }) {
+  const [gap, setGap] = useState<ResearchGap | null>(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    setGap(null);
+    setErr("");
+    getGap(gapId)
+      .then((result) => {
+        if (alive) setGap(result.gap);
+      })
+      .catch((e: Error) => {
+        if (alive) setErr(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [gapId]);
+
+  if (err) return <ErrorBanner message={err} />;
+  if (!gap) return <p className="text-xs text-slate-500">证据链加载中…</p>;
+  return <EvidenceChain gap={gap} />;
+}
+
 export default function Dossier() {
   const [params, setParams] = useSearchParams();
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
@@ -145,6 +172,7 @@ export default function Dossier() {
   const [report, setReport] = useState<ReportResponse | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [openChain, setOpenChain] = useState<string | null>(null);
 
   useEffect(() => {
     listWorkflows()
@@ -276,15 +304,19 @@ export default function Dossier() {
             {dossier.gaps.length === 0 ? (
               <p className="text-sm text-slate-400">该流程没有产生候选空白。</p>
             ) : (
+              <>
               <table className="w-full text-xs text-slate-300">
                 <thead className="text-slate-500">
                   <tr>
                     <th className="text-left py-1">空白</th>
                     <th className="text-left">类型</th>
+                    <th className="text-left">来源</th>
                     <th className="text-left">状态</th>
+                    <th className="text-left">门禁</th>
                     <th className="text-left">置信度</th>
                     <th className="text-right">支撑论文</th>
                     <th className="text-right">反证</th>
+                    <th className="text-right">证据链</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -292,14 +324,33 @@ export default function Dossier() {
                     <tr key={g.gap_id} className="border-t border-slate-700">
                       <td className="py-1">{g.title}</td>
                       <td>{g.gap_type}</td>
+                      <td className={g.discovery_mode === "llm_pipeline" ? "text-purple-300" : "text-slate-400"}>
+                        {g.discovery_mode === "llm_pipeline" ? "LLM 管线" : "规则式"}
+                      </td>
                       <td className={g.status === "accepted" ? "text-green-300" : "text-slate-400"}>{g.status}</td>
+                      <td>{g.gate_status || "—"}</td>
                       <td>{g.confidence_label}</td>
                       <td className="text-right">{g.supporting_papers}</td>
                       <td className="text-right">{g.counter_evidence}</td>
+                      <td className="text-right">
+                        <button
+                          type="button"
+                          className={ghostClass}
+                          onClick={() => setOpenChain((cur) => (cur === g.gap_id ? null : g.gap_id))}
+                        >
+                          {openChain === g.gap_id ? "收起" : "展开"}
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {openChain && (
+                <div className="mt-3 border-t border-slate-700 pt-3">
+                  <GapChain gapId={openChain} />
+                </div>
+              )}
+              </>
             )}
             <Link className="text-xs text-blue-400 underline mt-2 inline-block" to="/gaps">
               在 Research Gap 页查看证据原文 →
@@ -354,6 +405,61 @@ export default function Dossier() {
             )}
             <Link className="text-xs text-blue-400 underline mt-2 inline-block" to="/skills">
               在 Skill Registry 查看完整版本轨迹 →
+            </Link>
+          </Panel>
+
+          <Panel
+            title="LLM 链路与调用审计"
+            subtitle="只展示真实落库的计量与 hash；不存 prompt 正文，也不展示任何 Key。"
+          >
+            {dossier.llm ? (
+              <>
+                <div className="grid grid-cols-3 gap-2 mb-3">
+                  <Stat
+                    label="Provider / 模型"
+                    value={<span className="text-sm">{dossier.llm.configured ? `${dossier.llm.provider} / ${dossier.llm.model}` : "未配置"}</span>}
+                    hint={dossier.llm.status}
+                  />
+                  <Stat label="真实调用" value={`${dossier.llm.calls_used} / ${dossier.llm.max_calls}`} hint={`失败 ${dossier.llm.failed_calls}`} />
+                  <Stat label="缓存命中（免费）" value={dossier.llm.cache_hits} hint={`Evidence Card ${dossier.llm.evidence_cards}`} />
+                </div>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <Stat
+                    label="Token 用量"
+                    value={dossier.llm.total_tokens === null ? "—" : dossier.llm.total_tokens}
+                    hint={dossier.llm.total_tokens === null ? "provider 未返回 usage，不猜测" : "provider 返回值"}
+                  />
+                  <Stat
+                    label="Gap Pipeline"
+                    value={<span className="font-mono text-xs">{dossier.llm.gap_pipeline_id ?? "—"}</span>}
+                    hint={dossier.llm.gap_pipeline_status}
+                  />
+                </div>
+                {Object.keys(dossier.llm.stage_status).length > 0 && (
+                  <div className="flex flex-wrap gap-1 mb-2">
+                    {Object.entries(dossier.llm.stage_status).map(([stage, status]) => (
+                      <Badge key={stage} className="bg-slate-700 text-slate-300">
+                        {stage}: {status}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                {Object.keys(dossier.llm.role_usage).length > 0 && (
+                  <div className="text-xs text-slate-400 space-y-0.5 mb-2">
+                    {Object.entries(dossier.llm.role_usage).map(([role, count]) => (
+                      <div key={role}>· {role}: {count} 次</div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs text-slate-500">{dossier.llm.notice}</p>
+              </>
+            ) : (
+              <p className="text-xs text-slate-500">
+                此档案生成于 LLM 审计字段加入之前，只记录了确定性结果，没有 LLM 计量可展示。
+              </p>
+            )}
+            <Link className="text-xs text-blue-400 underline mt-2 inline-block" to="/gaps">
+              在 Research Gap 页查看完整证据链与逐条调用审计 →
             </Link>
           </Panel>
         </>

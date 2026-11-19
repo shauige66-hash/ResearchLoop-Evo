@@ -10,6 +10,7 @@ import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 try:  # optional: .env loading keeps local setup simple
     from dotenv import load_dotenv
@@ -19,6 +20,38 @@ except Exception:  # pragma: no cover - dotenv missing is tolerated
     pass
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Per-role LLM ceilings (§16 of the gap-pipeline spec). The global
+# RLE_LLM_MAX_CALLS budget still applies on top of these.
+DEFAULT_ROLE_BUDGETS: dict[str, int] = {
+    "research_planner": 1,
+    "literature_analyst": 30,
+    "gap_analyst": 2,
+    "gap_critic": 5,
+    "counter_query": 5,
+    "candidate_proposer": 20,
+}
+
+# Deterministic gap gate. These thresholds only mean "reached the system gate
+# within the current search scope"; they never prove novelty mathematically.
+DEFAULT_GAP_GATE: dict[str, Any] = {
+    "min_supporting_papers": 3,
+    "min_evidence_grounding": 3,
+    "min_cross_paper_support": 3,
+    "min_specificity": 3,
+    "min_testability": 3,
+    "max_novelty_risk": "MEDIUM",
+    "max_contradiction_risk": "MEDIUM",
+    "require_counter_search_success": True,
+    "max_prior_art_collisions": 0,
+    "min_critic_score_scale": 0,
+    "max_critic_score_scale": 5,
+}
+
+GATE_NOTICE = (
+    "Passing this gate means the candidate reached the configured evidence thresholds "
+    "within the current search scope. It is not a mathematical proof of novelty."
+)
 
 
 def _env(name: str, default: str) -> str:
@@ -79,11 +112,28 @@ class Settings:
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_model: str = ""
+    llm_timeout: float = 60.0
+    llm_cache_enabled: bool = True
+    # Per-role ceilings on top of the global RLE_LLM_MAX_CALLS budget.
+    llm_role_budgets: dict[str, int] = field(default_factory=dict)
+    # Deterministic gap gate thresholds. Kept here so no magic number lives in code.
+    gap_gate: dict[str, Any] = field(default_factory=dict)
     cors_origins: list[str] = field(default_factory=list)
 
     @property
     def llm_configured(self) -> bool:
         return bool(self.llm_enabled and self.llm_api_key and self.llm_base_url and self.llm_model)
+
+    @property
+    def llm_provider_label(self) -> str:
+        """Identify the provider without ever exposing the key or the full URL."""
+        if not self.llm_base_url:
+            return "not_configured"
+        host = self.llm_base_url.split("://")[-1].split("/")[0].lower()
+        for name in ("deepseek", "dashscope", "qwen", "openai", "moonshot", "bigmodel", "siliconflow"):
+            if name in host:
+                return name
+        return host
 
     @property
     def enabled_sources(self) -> list[str]:
@@ -115,10 +165,26 @@ def get_settings() -> Settings:
         title_jaccard_threshold=_env_float("RLE_TITLE_JACCARD", 0.85),
         title_ratio_threshold=_env_float("RLE_TITLE_RATIO", 0.92),
         llm_enabled=_env_flag("RLE_LLM_ENABLED", False),
-        llm_max_calls=_env_int("RLE_LLM_MAX_CALLS", 20),
+        llm_max_calls=_env_int("RLE_LLM_MAX_CALLS", 60),
         llm_api_key=_env("RLE_LLM_API_KEY", ""),
         llm_base_url=_env("RLE_LLM_BASE_URL", ""),
         llm_model=_env("RLE_LLM_MODEL", ""),
+        llm_timeout=_env_float("RLE_LLM_TIMEOUT", 60.0),
+        llm_cache_enabled=_env_flag("RLE_LLM_CACHE", True),
+        llm_role_budgets={
+            role: _env_int(f"RLE_LLM_{role.upper()}_MAX", limit)
+            for role, limit in DEFAULT_ROLE_BUDGETS.items()
+        },
+        gap_gate={
+            key: (
+                _env_flag(f"RLE_GATE_{key.upper()}", value)
+                if isinstance(value, bool)
+                else _env_int(f"RLE_GATE_{key.upper()}", value)
+                if isinstance(value, int)
+                else _env(f"RLE_GATE_{key.upper()}", str(value))
+            )
+            for key, value in DEFAULT_GAP_GATE.items()
+        },
         cors_origins=[
             o.strip()
             for o in _env(

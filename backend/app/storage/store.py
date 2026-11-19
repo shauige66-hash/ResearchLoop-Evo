@@ -16,6 +16,8 @@ from ..config import get_settings
 from ..models.evolution import EvolutionRound
 from ..models.experiment import BenchmarkCase, ExperimentRun, ExperimentSpec
 from ..models.gap import ResearchGap
+from ..models.gap_pipeline import EvidenceCard, GapPipelineRun
+from ..models.llm import BILLABLE_STATUSES, LLMCallRecord
 from ..models.paper import FieldEvidence, Paper
 from ..models.skill import SkillVersion
 from ..models.workflow import WorkflowRun
@@ -191,6 +193,61 @@ class Store:
             CREATE INDEX IF NOT EXISTS idx_expruns_case ON experiment_runs(case_id);
             CREATE INDEX IF NOT EXISTS idx_skills_status ON skill_versions(skill_id, status);
             CREATE INDEX IF NOT EXISTS idx_evorounds_spec ON evolution_rounds(spec_id);
+
+            CREATE TABLE IF NOT EXISTS llm_calls (
+                request_id TEXT PRIMARY KEY,
+                agent_role TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                status TEXT NOT NULL,
+                pipeline_id TEXT,
+                paper_id TEXT,
+                prompt_version TEXT NOT NULL,
+                prompt_hash TEXT NOT NULL,
+                response_hash TEXT,
+                latency_ms INTEGER,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                total_tokens INTEGER,
+                error TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS llm_cache (
+                cache_key TEXT PRIMARY KEY,
+                agent_role TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_version TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS evidence_cards (
+                paper_id TEXT NOT NULL,
+                prompt_version TEXT NOT NULL,
+                pipeline_id TEXT NOT NULL,
+                abstract_hash TEXT NOT NULL,
+                json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (paper_id, prompt_version)
+            );
+
+            CREATE TABLE IF NOT EXISTS gap_pipelines (
+                pipeline_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                workflow_id TEXT,
+                status TEXT NOT NULL,
+                current_stage TEXT NOT NULL,
+                json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_llmcalls_role ON llm_calls(agent_role);
+            CREATE INDEX IF NOT EXISTS idx_llmcalls_pipeline ON llm_calls(pipeline_id);
+            CREATE INDEX IF NOT EXISTS idx_cards_pipeline ON evidence_cards(pipeline_id);
+            CREATE INDEX IF NOT EXISTS idx_pipelines_workflow ON gap_pipelines(workflow_id);
             """
         )
         self.conn.commit()
@@ -743,6 +800,169 @@ class Store:
             "SELECT json FROM workflows ORDER BY created_at DESC"
         ).fetchall()
         return [WorkflowRun.model_validate_json(r["json"]) for r in rows]
+
+    # ------------------------------------------------- LLM audit, cache, cards
+    def record_llm_call(self, record: "LLMCallRecord") -> None:
+        """Append one audit row. Hashes only: no prompt text, no API key."""
+        self.conn.execute(
+            """
+            INSERT INTO llm_calls (request_id, agent_role, provider, model, status, pipeline_id,
+                paper_id, prompt_version, prompt_hash, response_hash, latency_ms, prompt_tokens,
+                completion_tokens, total_tokens, error, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(request_id) DO UPDATE SET status=excluded.status, error=excluded.error
+            """,
+            (
+                record.request_id,
+                record.agent_role,
+                record.provider,
+                record.model,
+                record.status,
+                record.pipeline_id,
+                record.paper_id,
+                record.prompt_version,
+                record.prompt_hash,
+                record.response_hash,
+                record.latency_ms,
+                record.prompt_tokens,
+                record.completion_tokens,
+                record.total_tokens,
+                record.error,
+                record.created_at or _now(),
+            ),
+        )
+        self.conn.commit()
+
+    def list_llm_calls(
+        self, pipeline_id: str | None = None, agent_role: str | None = None
+    ) -> list["LLMCallRecord"]:
+        sql = "SELECT * FROM llm_calls"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if pipeline_id:
+            clauses.append("pipeline_id=?")
+            params.append(pipeline_id)
+        if agent_role:
+            clauses.append("agent_role=?")
+            params.append(agent_role)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        rows = self.conn.execute(sql + " ORDER BY created_at, request_id", params).fetchall()
+        return [LLMCallRecord.model_validate(dict(r)) for r in rows]
+
+    def count_llm_attempts(self, agent_role: str | None = None) -> int:
+        """Real HTTP attempts only. Cache hits and refusals never consume budget."""
+        placeholders = ",".join("?" for _ in BILLABLE_STATUSES)
+        sql = f"SELECT COUNT(*) AS n FROM llm_calls WHERE status IN ({placeholders})"
+        params: list[Any] = sorted(BILLABLE_STATUSES)
+        if agent_role:
+            sql += " AND agent_role=?"
+            params.append(agent_role)
+        row = self.conn.execute(sql, params).fetchone()
+        return int(row["n"] or 0)
+
+    def read_llm_cache(self, cache_key: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT content FROM llm_cache WHERE cache_key=?", (cache_key,)
+        ).fetchone()
+        return row["content"] if row else None
+
+    def write_llm_cache(
+        self, cache_key: str, agent_role: str, model: str, prompt_version: str, content: str
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO llm_cache (cache_key, agent_role, model, prompt_version, content, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET content=excluded.content
+            """,
+            (cache_key, agent_role, model, prompt_version, content, _now()),
+        )
+        self.conn.commit()
+
+    def save_evidence_card(self, card: "EvidenceCard") -> None:
+        self.conn.execute(
+            """
+            INSERT INTO evidence_cards (paper_id, prompt_version, pipeline_id, abstract_hash, json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(paper_id, prompt_version) DO UPDATE SET
+                pipeline_id=excluded.pipeline_id,
+                abstract_hash=excluded.abstract_hash,
+                json=excluded.json
+            """,
+            (
+                card.paper_id,
+                card.prompt_version,
+                card.pipeline_id,
+                card.abstract_hash,
+                card.model_dump_json(),
+                _now(),
+            ),
+        )
+        self.conn.commit()
+
+    def get_evidence_card(self, paper_id: str, prompt_version: str) -> "EvidenceCard | None":
+        row = self.conn.execute(
+            "SELECT json FROM evidence_cards WHERE paper_id=? AND prompt_version=?",
+            (paper_id, prompt_version),
+        ).fetchone()
+        return EvidenceCard.model_validate_json(row["json"]) if row else None
+
+    def list_evidence_cards(self, pipeline_id: str | None = None) -> list["EvidenceCard"]:
+        if pipeline_id:
+            rows = self.conn.execute(
+                "SELECT json FROM evidence_cards WHERE pipeline_id=? ORDER BY paper_id",
+                (pipeline_id,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute("SELECT json FROM evidence_cards ORDER BY paper_id").fetchall()
+        return [EvidenceCard.model_validate_json(r["json"]) for r in rows]
+
+    def save_gap_pipeline(self, pipeline: "GapPipelineRun") -> None:
+        """Upsert the whole pipeline state so resume never re-runs finished stages."""
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT INTO gap_pipelines (pipeline_id, topic, run_id, workflow_id, status,
+                current_stage, json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(pipeline_id) DO UPDATE SET
+                status=excluded.status,
+                current_stage=excluded.current_stage,
+                json=excluded.json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                pipeline.pipeline_id,
+                pipeline.topic,
+                pipeline.run_id,
+                pipeline.workflow_id,
+                pipeline.status,
+                pipeline.current_stage,
+                pipeline.model_dump_json(),
+                pipeline.created_at or now,
+                now,
+            ),
+        )
+        self.conn.commit()
+
+    def get_gap_pipeline(self, pipeline_id: str) -> "GapPipelineRun | None":
+        row = self.conn.execute(
+            "SELECT json FROM gap_pipelines WHERE pipeline_id=?", (pipeline_id,)
+        ).fetchone()
+        return GapPipelineRun.model_validate_json(row["json"]) if row else None
+
+    def list_gap_pipelines(self, workflow_id: str | None = None) -> list["GapPipelineRun"]:
+        if workflow_id:
+            rows = self.conn.execute(
+                "SELECT json FROM gap_pipelines WHERE workflow_id=? ORDER BY created_at DESC",
+                (workflow_id,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT json FROM gap_pipelines ORDER BY created_at DESC"
+            ).fetchall()
+        return [GapPipelineRun.model_validate_json(r["json"]) for r in rows]
 
     def close(self) -> None:
         """Close the database connection."""

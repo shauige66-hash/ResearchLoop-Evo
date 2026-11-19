@@ -28,9 +28,15 @@ export type StepStatus =
   | "completed"
   | "failed"
   | "awaiting_human"
+  | "awaiting_budget"
   | "skipped";
 
-export type WorkflowStatus = "running" | "awaiting_human" | "completed" | "failed";
+export type WorkflowStatus =
+  | "running"
+  | "awaiting_human"
+  | "awaiting_budget"
+  | "completed"
+  | "failed";
 
 export interface ExecutedRun {
   run_id: string;
@@ -111,6 +117,73 @@ export interface FieldAudit {
   example_paper_id: string | null;
 }
 
+export interface DossierEvidenceChain {
+  gap_claim: string;
+  why_it_matters: string;
+  unresolved_boundary: string;
+  candidate_research_question: string;
+  minimum_experiment: string;
+  supporting_papers: {
+    paper_id: string;
+    title: string;
+    doi: string | null;
+    source_url: string;
+    publication_year: number | null;
+  }[];
+  supporting_evidence: {
+    paper_id: string;
+    field: string;
+    evidence_span: string;
+    evidence_source: string;
+    extraction_method: string;
+  }[];
+  counter_evidence: {
+    paper_id: string;
+    title: string;
+    doi: string | null;
+    source: string;
+    matched_query: string;
+    why_relevant: string;
+    evidence_span: string | null;
+  }[];
+  counter_search: {
+    status: string;
+    queries: string[];
+    scope: Record<string, unknown>;
+    errors: Record<string, unknown>[];
+    detection_key: string;
+  };
+  prior_art: Record<string, unknown>[];
+  novelty_risk: string;
+  novelty_rationale: string;
+  critic: Record<string, unknown>;
+  python_validation: Record<string, unknown>;
+  gate: Record<string, unknown>;
+  confidence: { label: string; rationale: string };
+  final_status: string;
+  human_note: string | null;
+  scope_notice: string;
+}
+
+export interface DossierLlm {
+  configured: boolean;
+  status: string;
+  provider: string;
+  model: string;
+  max_calls: number;
+  calls_used: number;
+  cache_hits: number;
+  role_usage: Record<string, number>;
+  failed_calls: number;
+  total_tokens: number | null;
+  notice: string;
+  gap_pipeline_id: string | null;
+  gap_pipeline_status: string;
+  stage_status: Record<string, string>;
+  evidence_cards: number;
+  audit_endpoint: string;
+}
+
 export interface Dossier {
   topic: string;
   workflow_id: string;
@@ -139,6 +212,12 @@ export interface Dossier {
     confidence_label: ConfidenceLabel;
     supporting_papers: number;
     counter_evidence: number;
+    discovery_mode: "rule_based" | "llm_pipeline";
+    counter_status: string;
+    novelty_risk: string;
+    gate_status: string;
+    validation_passed: boolean | null;
+    evidence_chain: DossierEvidenceChain;
   }[];
   accepted_gap_id: string | null;
   hypothesis: string | null;
@@ -162,6 +241,7 @@ export interface Dossier {
     total_versions: number;
     promotion_outcome: PromotionOutcome | null;
   };
+  llm?: DossierLlm;
   acceptance_status:
     | "self_evolution_accepted"
     | "awaiting_reference_set"
@@ -375,12 +455,14 @@ export const STEP_STYLES: Record<StepStatus, string> = {
   completed: "bg-green-900/50 text-green-300",
   failed: "bg-red-900/50 text-red-300",
   awaiting_human: "bg-amber-900/50 text-amber-300",
+  awaiting_budget: "bg-orange-900/50 text-orange-300",
   skipped: "bg-slate-700 text-slate-400",
 };
 
 export const WORKFLOW_STYLES: Record<WorkflowStatus, string> = {
   running: "bg-blue-900/50 text-blue-300",
   awaiting_human: "bg-amber-900/50 text-amber-300",
+  awaiting_budget: "bg-orange-900/50 text-orange-300",
   completed: "bg-green-900/50 text-green-300",
   failed: "bg-red-900/50 text-red-300",
 };

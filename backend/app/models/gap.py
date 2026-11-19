@@ -17,7 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from .paper import EXTRACTION_MODE, ExtractionMethod
+from .paper import EXTRACTION_MODE, EvidenceSource, ExtractionMethod
 
 GapType = Literal[
     "method",
@@ -26,6 +26,10 @@ GapType = Literal[
     "reliability",
     "efficiency",
     "reproducibility",
+    # Added by the LLM gap pipeline. The original six remain valid and unchanged.
+    "coverage",
+    "contradiction",
+    "integration",
 ]
 
 GapStatus = Literal["needs_human_review", "accepted", "rejected", "edited"]
@@ -40,6 +44,9 @@ GAP_TYPE_LABELS: dict[GapType, str] = {
     "reliability": "Reliability Gap",
     "efficiency": "Efficiency Gap",
     "reproducibility": "Reproducibility Gap",
+    "coverage": "Coverage Gap",
+    "contradiction": "Contradiction Gap",
+    "integration": "Integration Gap",
 }
 
 SCOPE_NOTICE = (
@@ -58,6 +65,9 @@ class GapEvidenceItem(BaseModel):
     source_url: str
     field: str
     evidence_span: str
+    # Records written before this field existed only ever quoted retrieved
+    # abstracts, so "abstract" is the truthful default, never "fulltext".
+    evidence_source: EvidenceSource = "abstract"
     extraction_method: str = "heuristic"
 
     @model_validator(mode="after")
@@ -135,6 +145,18 @@ class ResearchGap(BaseModel):
     created_at: str = ""
     updated_at: str | None = None
 
+    # --- additive payload from the LLM gap pipeline ---
+    # Rule-based gaps leave these empty; nothing downstream may require them.
+    discovery_mode: Literal["rule_based", "llm_pipeline"] = "rule_based"
+    pipeline_id: str | None = None
+    candidate: dict = Field(default_factory=dict)
+    critique: dict = Field(default_factory=dict)
+    validation: dict = Field(default_factory=dict)
+    gate: dict = Field(default_factory=dict)
+    counter_status: str = "NOT_RUN"
+    prior_art: list[dict] = Field(default_factory=list)
+    novelty_risk: str = ""
+
     @model_validator(mode="after")
     def _require_multi_paper_support(self) -> "ResearchGap":
         distinct = list(dict.fromkeys(self.supporting_papers))
@@ -151,6 +173,14 @@ class ResearchGap(BaseModel):
             raise ValueError(f"supporting evidence references non-supporting papers: {unknown}")
         if not self.confidence_rationale.strip():
             raise ValueError("confidence_label must be justified by a rationale")
+        return self
+
+    @model_validator(mode="after")
+    def _derive_legacy_counter_status(self) -> "ResearchGap":
+        # Gaps stored before counter_status existed still hold real retrieved
+        # counter-evidence; reporting NOT_RUN for them would misstate the search.
+        if self.counter_status == "NOT_RUN" and self.counter_evidence:
+            self.counter_status = "COUNTER_EVIDENCE_FOUND"
         return self
 
     @property

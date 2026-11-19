@@ -15,8 +15,16 @@ import type {
   GapType,
   ResearchGap,
 } from "../types/gap";
-import { GAP_STATUS_LABELS, GAP_TYPE_LABELS } from "../types/gap";
+import {
+  COUNTER_STATUS_LABELS,
+  GAP_STATUS_LABELS,
+  GAP_TYPE_LABELS,
+  RISK_STYLES,
+} from "../types/gap";
+import type { RiskLabel } from "../types/gap";
 import type { RunSummary } from "../types/paper";
+import EvidenceChain from "../components/gap/EvidenceChain";
+import PipelinePanel from "../components/gap/PipelinePanel";
 
 const CONFIDENCE_STYLES: Record<ConfidenceLabel, string> = {
   High: "bg-emerald-900/50 text-emerald-300 border-emerald-700",
@@ -117,6 +125,27 @@ function GapCard({
           {gap.confidence_label} confidence
         </Badge>
         <Badge className={STATUS_STYLES[gap.status]}>{GAP_STATUS_LABELS[gap.status]}</Badge>
+        <Badge
+          className={
+            gap.counter_status === "COUNTER_SEARCH_FAILED"
+              ? "bg-red-900/40 text-red-300 border-red-700"
+              : gap.counter_status === "COUNTER_EVIDENCE_FOUND"
+                ? "bg-amber-900/40 text-amber-300 border-amber-700"
+                : "bg-slate-700/60 text-slate-300 border-slate-600"
+          }
+        >
+          {COUNTER_STATUS_LABELS[gap.counter_status] || gap.counter_status || "NOT_RUN"}
+        </Badge>
+        {gap.novelty_risk && (
+          <Badge className={RISK_STYLES[(gap.novelty_risk as RiskLabel) || "MEDIUM"]}>
+            novelty_risk: {gap.novelty_risk}
+          </Badge>
+        )}
+        {gap.discovery_mode === "llm_pipeline" && (
+          <Badge className="bg-purple-900/40 text-purple-300 border-purple-700">
+            LLM 提出 · Python 验证
+          </Badge>
+        )}
         {gap.experimentability.testable_minimally ? (
           <Badge className="bg-emerald-900/40 text-emerald-300 border-emerald-700">
             可最小实验验证
@@ -176,11 +205,13 @@ function GapCard({
         }}
         className="text-sm text-blue-400 hover:text-blue-300"
       >
-        {open ? "收起证据 / Hide evidence" : "展开证据与相关工作 / Show evidence & related work"}
+        {open ? "收起证据链 / Hide evidence chain" : "展开完整证据链 / Show full evidence chain"}
       </button>
 
       {open && (
         <div className="space-y-4 border-t border-slate-700 pt-3">
+          <EvidenceChain gap={gap} />
+
           <section>
             <h4 className="text-sm font-semibold mb-2">支持证据（原文摘录）</h4>
             <div className="space-y-2 max-h-64 overflow-auto">
@@ -487,8 +518,9 @@ export default function ResearchGap() {
 
       {mode && (
         <div className="p-3 bg-amber-900/20 border border-amber-700 rounded text-sm text-amber-200">
-          <strong>Heuristic Mode</strong> — 字段抽取为规则启发式（extraction_mode={mode}），
-          空白检测为规则比较（detection_mode=rule_based），未调用任何 LLM Provider，也未阅读全文。
+          <strong>Heuristic Mode</strong> — Paper 字段抽取仍为规则启发式（extraction_mode={mode}），
+          只使用检索到的摘要，未阅读全文。空白检测模式见每条候选的 discovery_mode；
+          LLM 是否配置、调用预算与审计记录见下方 Pipeline 面板。
         </div>
       )}
 
@@ -568,6 +600,14 @@ export default function ResearchGap() {
           </div>
         </div>
       </div>
+
+      <PipelinePanel
+        runId={runId}
+        topic={runs.find((run) => run.id === runId)?.topic || ""}
+        onChanged={() => {
+          reload().catch((err) => setError(String(err)));
+        }}
+      />
 
       {error && (
         <div className="p-3 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm">

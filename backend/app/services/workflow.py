@@ -29,6 +29,14 @@ from ..models.experiment import (
     ExperimentSpec,
 )
 from ..models.gap import ResearchGap
+from ..models.gap_pipeline import (
+    PROMPT_VERSION,
+    GapPipelineRun,
+    PipelineStartRequest,
+    ResearchPlan,
+    StageId,
+)
+from ..models.llm import NOT_CONFIGURED_REASON
 from ..models.paper import EXTRACTED_FIELDS, EXTRACTION_MODE, Paper
 from ..models.schemas import TopicInput
 from ..models.skill import SKILL_ID, SkillVersion, plan_queries
@@ -40,6 +48,7 @@ from ..models.workflow import (
     WorkflowStep,
     new_steps,
 )
+from ..services import gap_pipeline
 from ..services.benchmark import assign_splits, verify_doi
 from ..services.evaluator import (
     dataset_fingerprint,
@@ -56,6 +65,7 @@ from ..services.evolution import (
 from ..services.experiment import compare_case, ensure_seed_skill, run_spec
 from ..services.gap import ResearchGapAnalyzer
 from ..services.http import HttpFailure
+from ..services.llm import LLMProvider
 from ..services.pipeline import _expand_keywords, search_pipeline
 from ..services.promotion import PromotionRefused, promote, rollback
 from ..services.report import generate_report
@@ -134,6 +144,96 @@ def _require(context: dict[str, Any], key: str) -> Any:
     return value
 
 
+# ------------------------------------------------------- LLM gap pipeline wiring
+# The workflow keeps its 18 step ids. Four of them own a sub-pipeline of LLM
+# stages; every stage result is persisted, so a resume reuses it instead of
+# paying for the same call twice. Without a configured provider nothing here
+# calls a model and the deterministic path runs unchanged.
+PLANNER_QUERY_LIMIT = 2
+
+
+def _pipeline_of(store: Store, wf: WorkflowRun) -> GapPipelineRun | None:
+    pipeline_id = wf.context.get("gap_pipeline_id")
+    return store.get_gap_pipeline(pipeline_id) if pipeline_id else None
+
+
+def _planner_queries(plan: ResearchPlan | None) -> list[str]:
+    """A bounded slice of the plan, so retrieval cannot expand without limit."""
+    if plan is None:
+        return []
+    ordered = [
+        *plan.challenge_queries[:1],
+        *plan.method_queries[:1],
+        *plan.recent_queries[:1],
+        *plan.review_queries[:1],
+        *plan.foundational_queries[:1],
+    ]
+    return [q.strip() for q in ordered if q.strip()][:PLANNER_QUERY_LIMIT]
+
+
+def _pipeline_summary(pipeline: GapPipelineRun, executed: list[str]) -> dict[str, Any]:
+    return {
+        "pipeline_id": pipeline.pipeline_id,
+        "status": pipeline.status,
+        "provider": pipeline.provider,
+        "model": pipeline.model,
+        "stages_executed": executed,
+        "stage_status": {s.stage_id: s.status for s in pipeline.stages},
+        "stage_errors": {s.stage_id: s.error for s in pipeline.stages if s.error},
+        "llm_calls_used": pipeline.llm_calls_used,
+        "llm_cache_hits": pipeline.llm_cache_hits,
+        "llm_budget": pipeline.llm_budget,
+        "selected_paper_ids": pipeline.selected_paper_ids,
+    }
+
+
+async def _run_pipeline_to(
+    store: Store, wf: WorkflowRun, step: WorkflowStep, through_stage: StageId
+) -> tuple[GapPipelineRun | None, dict[str, Any]]:
+    """Advance the LLM sub-pipeline, reporting what really happened.
+
+    A budget stop halts the workflow step: the operator must raise the budget or
+    resume later. Any other LLM failure is recorded and the caller falls back to
+    the deterministic service, never to an invented result.
+    """
+    pipeline = _pipeline_of(store, wf)
+    if pipeline is None:
+        return None, {"status": "NOT_RUN", "notice": "no gap pipeline is bound to this workflow"}
+    if not LLMProvider(store).configured:
+        return pipeline, {
+            "pipeline_id": pipeline.pipeline_id,
+            "status": "not_configured",
+            "stages_executed": [],
+            "notice": NOT_CONFIGURED_REASON,
+        }
+    pipeline, executed = await gap_pipeline.advance(
+        store, pipeline, through_stage=through_stage, provider=LLMProvider(store)
+    )
+    summary = _pipeline_summary(pipeline, executed)
+    if pipeline.status == "awaiting_budget":
+        step.status = "awaiting_budget"
+        step.notice = (
+            "LLM 调用预算已用尽，本步骤停在这里等待预算；已完成的阶段与证据全部保留，"
+            "恢复后不会重复付费。"
+        )
+    return pipeline, summary
+
+
+def _skip_failed_planner(store: Store, pipeline: GapPipelineRun | None) -> None:
+    """A broken planner must not block deterministic retrieval."""
+    if pipeline is None or pipeline.status != "failed":
+        return
+    stage = pipeline.stage("planner")
+    if stage.status != "failed":
+        return
+    stage.status = "skipped"
+    stage.notice = (
+        f"LLM planner unavailable ({stage.error}); deterministic keyword expansion ran instead."
+    )
+    pipeline.status = "running"
+    store.save_gap_pipeline(pipeline)
+
+
 def _gate(store: Store, spec: ExperimentSpec) -> dict:
     cases = [c for c in store.list_benchmark_cases() if c.case_id in spec.case_ids]
     runs = store.list_experiment_runs(spec_id=spec.spec_id)
@@ -172,6 +272,14 @@ async def _step_research_topic(store: Store, wf: WorkflowRun, step: WorkflowStep
 async def _step_search_planning(store: Store, wf: WorkflowRun, step: WorkflowStep) -> None:
     topic = _topic_input(wf)
     keywords = _expand_keywords(topic)
+    pipeline = gap_pipeline.create_pipeline(
+        store,
+        PipelineStartRequest(topic=wf.topic, workflow_id=wf.workflow_id),
+    )
+    wf.context["gap_pipeline_id"] = pipeline.pipeline_id
+    pipeline, summary = await _run_pipeline_to(store, wf, step, "planner")
+    _skip_failed_planner(store, pipeline)
+    planned = _planner_queries(pipeline.plan if pipeline else None)
     step.inputs = {"topic": wf.topic, "query": wf.query, "sources": wf.sources}
     step.outputs = {
         "keywords_used": [k.model_dump() for k in keywords],
@@ -179,14 +287,26 @@ async def _step_search_planning(store: Store, wf: WorkflowRun, step: WorkflowSte
         "planned_api_requests": len(keywords) * len(wf.sources),
         "sources": wf.sources,
         "top_k": wf.top_k,
+        "llm_pipeline": summary,
+        "planner_queries_for_retrieval": planned,
+        "planner_query_limit": PLANNER_QUERY_LIMIT,
     }
+    if step.status == "awaiting_budget":
+        return
     step.notice = (
-        "关键词由确定性扩展规则生成，未调用 LLM；planned_api_requests 是检索前的上限估计。"
+        f"关键词由确定性扩展规则生成；LLM 规划另提 {len(planned)} 条检索式（上限 "
+        f"{PLANNER_QUERY_LIMIT}），planned_api_requests 是检索前的上限估计。"
+        if planned
+        else "关键词由确定性扩展规则生成，未调用 LLM；planned_api_requests 是检索前的上限估计。"
     )
 
 
 async def _step_literature_discovery(store: Store, wf: WorkflowRun, step: WorkflowStep) -> None:
     topic = _topic_input(wf)
+    pipeline = _pipeline_of(store, wf)
+    planned = _planner_queries(pipeline.plan if pipeline else None)
+    if planned:
+        topic.keywords = [*topic.keywords, *planned]
     step.inputs = {"topic": topic.model_dump()}
     response = await search_pipeline(topic)
     project_id = wf.context.get("project_id") or response.project_id
@@ -208,10 +328,17 @@ async def _step_literature_discovery(store: Store, wf: WorkflowRun, step: Workfl
         )
     wf.context["literature_run_id"] = response.run_id
     wf.context["paper_ids"] = [p.paper_id for p in response.papers]
+    if pipeline is not None:
+        if pipeline.run_id and pipeline.run_id != response.run_id:
+            gap_pipeline.rewind(pipeline, "selection")
+        pipeline.run_id = response.run_id
+        pipeline.paper_ids = list(wf.context["paper_ids"])
+        store.save_gap_pipeline(pipeline)
     step.outputs = {
         "run_id": response.run_id,
         "paper_count": len(response.papers),
         "paper_ids": wf.context["paper_ids"],
+        "planner_queries_used": planned,
         "requests_made": response.meta.get("requests_made", 0),
         "cache_hits": response.meta.get("cache_hits", 0),
         "duration_ms": response.meta.get("duration_ms", 0),
@@ -246,6 +373,15 @@ async def _step_paper_extraction(store: Store, wf: WorkflowRun, step: WorkflowSt
             "example_paper_id": grounded[0].paper_id if grounded else None,
         }
     step.inputs = {"run_id": run_id, "paper_count": len(papers)}
+    pipeline, summary = await _run_pipeline_to(store, wf, step, "literature_analysis")
+    cards = [
+        c
+        for c in (
+            store.get_evidence_card(pid, PROMPT_VERSION)
+            for pid in (pipeline.selected_paper_ids if pipeline else [])
+        )
+        if c is not None
+    ]
     step.outputs = {
         "extraction_mode": EXTRACTION_MODE,
         "fields_audited": len(EXTRACTED_FIELDS),
@@ -253,10 +389,22 @@ async def _step_paper_extraction(store: Store, wf: WorkflowRun, step: WorkflowSt
         "papers_with_abstract": sum(1 for p in papers if p.abstract),
         "grounded_cells": sum(v["grounded"] for v in per_field.values()),
         "unknown_cells": sum(v["unknown"] for v in per_field.values()),
+        "llm_pipeline": summary,
+        "llm_evidence_cards": len(cards),
+        "llm_card_grounded_fields": sum(len(c.grounded_fields) for c in cards),
+        "llm_card_rejected_fields": sum(len(c.rejected_fields) for c in cards),
     }
+    if step.status == "awaiting_budget":
+        return
     step.notice = (
         "Heuristic Mode：字段只来自检索到的摘要，未阅读任何全文。"
         "没有证据的字段保持 unknown，不猜测。"
+        + (
+            f" LLM Evidence Card 另覆盖 {len(cards)} 篇（evidence_source=abstract，"
+            "逐字校验，不写回 Paper 字段）。"
+            if cards
+            else ""
+        )
     )
 
 
@@ -292,13 +440,46 @@ async def _step_literature_matrix(store: Store, wf: WorkflowRun, step: WorkflowS
 async def _step_gap_discovery(store: Store, wf: WorkflowRun, step: WorkflowStep) -> None:
     run_id = _require(wf.context, "literature_run_id")
     papers = _papers_of(store, run_id)
-    analyzer = ResearchGapAnalyzer(papers, wf.topic, run_id)
-    gaps = analyzer.analyze()
-    for gap in gaps:
-        store.save_gap(gap)
+    pipeline, summary = await _run_pipeline_to(store, wf, step, "gap_critic")
+    if step.status == "awaiting_budget":
+        step.inputs = {"run_id": run_id, "papers_compared": len(papers)}
+        step.outputs = {"llm_pipeline": summary}
+        return
+    gaps = [
+        g
+        for g in (
+            store.get_gap(item.gap_id)
+            for item in (pipeline.gaps if pipeline else [])
+            if item.gap_id
+        )
+        if g
+    ]
+    fallback_reason = ""
+    if gaps:
+        mode = "llm_pipeline"
+    else:
+        mode = "rule_based"
+        if pipeline is None:
+            fallback_reason = "no gap pipeline is bound to this workflow"
+        elif pipeline.status == "not_configured":
+            fallback_reason = NOT_CONFIGURED_REASON
+        elif not pipeline.gaps:
+            fallback_reason = "the LLM gap analyst proposed no candidate; nothing was invented"
+        else:
+            fallback_reason = (
+                "no LLM candidate survived projection onto retrieved papers with verbatim "
+                "evidence; the deterministic comparator ran instead"
+            )
+        analyzer = ResearchGapAnalyzer(papers, wf.topic, run_id)
+        gaps = analyzer.analyze()
+        for gap in gaps:
+            store.save_gap(gap)
     wf.context["gap_ids"] = [g.gap_id for g in gaps]
     step.inputs = {"run_id": run_id, "papers_compared": len(papers)}
     step.outputs = {
+        "discovery_mode": mode,
+        "fallback_reason": fallback_reason,
+        "llm_pipeline": summary,
         "gap_count": len(gaps),
         "gaps": [
             {
@@ -309,14 +490,21 @@ async def _step_gap_discovery(store: Store, wf: WorkflowRun, step: WorkflowStep)
                 "supporting_papers": g.supporting_papers,
                 "status": g.status,
                 "experimentability": g.experimentability,
+                "discovery_mode": g.discovery_mode,
+                "novelty_risk": g.novelty_risk,
             }
             for g in gaps
         ],
     }
     step.notice = (
-        "每个候选都由至少两篇论文的方法/实验范围比较得出，默认 needs_human_review。"
-        if gaps
-        else "当前检索结果不足以支撑任何跨论文空白；不编造候选。"
+        "LLM 提出的候选已由 Python 投影到真实论文与逐字证据，默认 needs_human_review；"
+        "批评与门禁结果见 Research Gap 页。"
+        if mode == "llm_pipeline"
+        else (
+            "每个候选都由至少两篇论文的方法/实验范围比较得出，默认 needs_human_review。"
+            if gaps
+            else "当前检索结果不足以支撑任何跨论文空白；不编造候选。"
+        )
     )
 
 
@@ -328,29 +516,46 @@ async def _step_counter_evidence_search(store: Store, wf: WorkflowRun, step: Wor
         return
     gaps = [g for g in (store.get_gap(gid) for gid in gap_ids) if g]
     run_id = _require(wf.context, "literature_run_id")
+    pipeline, summary = await _run_pipeline_to(store, wf, step, "validation")
+    if step.status == "awaiting_budget":
+        step.inputs = {"gap_ids": gap_ids}
+        step.outputs = {"llm_pipeline": summary}
+        return
+    gaps = [g for g in (store.get_gap(gid) for gid in gap_ids) if g]
     analyzer = ResearchGapAnalyzer(_papers_of(store, run_id), wf.topic, run_id)
-    updated = await analyzer.add_counter_evidence(gaps, top_k=10)
+    pending = [g for g in gaps if g.counter_status == "NOT_RUN"]
+    updated = await analyzer.add_counter_evidence(pending, top_k=10) if pending else []
     for gap in updated:
         store.save_gap(gap)
-    step.inputs = {"gap_ids": gap_ids, "sources": ["openalex", "crossref", "arxiv"], "top_k": 10}
+    step.inputs = {
+        "gap_ids": gap_ids,
+        "sources": ["openalex", "crossref", "arxiv"],
+        "top_k": 10,
+        "already_searched_by_pipeline": len(gaps) - len(pending),
+    }
     step.outputs = {
-        "gaps_searched": len(updated),
-        "counter_evidence_found": sum(len(g.counter_evidence) for g in updated),
+        "gaps_searched": len(gaps),
+        "counter_evidence_found": sum(len(g.counter_evidence) for g in gaps),
+        "llm_pipeline": summary,
         "per_gap": [
             {
                 "gap_id": g.gap_id,
                 "query": g.counter_search_queries[0] if g.counter_search_queries else "",
                 "counter_count": len(g.counter_evidence),
+                "counter_status": g.counter_status,
                 "confidence_label": g.confidence_label,
                 "confidence_rationale": g.confidence_rationale,
+                "novelty_risk": g.novelty_risk,
+                "status": g.status,
                 "scope": g.counter_search_scope,
                 "errors": g.counter_search_errors,
             }
-            for g in updated
+            for g in gaps
         ],
     }
     step.notice = (
         "反证只表示当前检索范围内的发现；没有找到不等于问题不存在。"
+        "搜索失败记为 COUNTER_SEARCH_FAILED，不会当成'无反证'。"
     )
 
 
@@ -975,9 +1180,82 @@ async def _step_promotion_decision(store: Store, wf: WorkflowRun, step: Workflow
     }[outcome["outcome"]]
 
 
+def _gap_evidence_chain(gap: ResearchGap, papers: dict[str, Paper]) -> dict:
+    """The auditable chain behind one dossier gap entry.
+
+    Counts alone cannot answer "which verbatim sentence supports this claim",
+    so the dossier carries the evidence itself rather than only its length.
+    """
+    supporting = []
+    for pid in gap.supporting_papers:
+        paper = papers.get(pid)
+        quoted = next((e for e in gap.supporting_evidence if e.paper_id == pid), None)
+        supporting.append(
+            {
+                "paper_id": pid,
+                "title": paper.title if paper else (quoted.title if quoted else ""),
+                "doi": paper.doi if paper else (quoted.doi if quoted else None),
+                "source_url": paper.source_url if paper else (quoted.source_url if quoted else ""),
+                "publication_year": paper.publication_year if paper else None,
+            }
+        )
+    return {
+        "gap_claim": gap.candidate.get("gap_claim") or gap.description,
+        "why_it_matters": gap.candidate.get("why_it_matters", ""),
+        "unresolved_boundary": gap.candidate.get("unresolved_boundary", ""),
+        "candidate_research_question": (
+            gap.candidate.get("candidate_research_question") or gap.unresolved_question
+        ),
+        "minimum_experiment": (
+            gap.candidate.get("minimum_experiment") or gap.experimentability.proposed_experiment
+        ),
+        "supporting_papers": supporting,
+        "supporting_evidence": [
+            {
+                "paper_id": e.paper_id,
+                "field": e.field,
+                "evidence_span": e.evidence_span,
+                "evidence_source": e.evidence_source,
+                "extraction_method": e.extraction_method,
+            }
+            for e in gap.supporting_evidence
+        ],
+        "counter_evidence": [
+            {
+                "paper_id": c.paper_id,
+                "title": c.title,
+                "doi": c.doi,
+                "source": c.source,
+                "matched_query": c.matched_query,
+                "why_relevant": c.why_relevant,
+                "evidence_span": c.evidence_span,
+            }
+            for c in gap.counter_evidence
+        ],
+        "counter_search": {
+            "status": gap.counter_status,
+            "queries": gap.counter_search_queries,
+            "scope": gap.counter_search_scope,
+            "errors": gap.counter_search_errors,
+            "detection_key": gap.detection_key,
+        },
+        "prior_art": gap.prior_art,
+        "novelty_risk": gap.novelty_risk,
+        "novelty_rationale": gap.candidate.get("novelty_rationale", ""),
+        "critic": gap.critique,
+        "python_validation": gap.validation,
+        "gate": gap.gate,
+        "confidence": {"label": gap.confidence_label, "rationale": gap.confidence_rationale},
+        "final_status": gap.status,
+        "human_note": gap.human_note,
+        "scope_notice": gap.scope_notice,
+    }
+
+
 async def _step_research_dossier(store: Store, wf: WorkflowRun, step: WorkflowStep) -> None:
     run_id = _require(wf.context, "literature_run_id")
     papers = _papers_of(store, run_id)
+    paper_by_id = {p.paper_id: p for p in papers}
     report = generate_report(papers, wf.topic)
     gap_ids = wf.context.get("gap_ids") or []
     gaps = [g for g in (store.get_gap(gid) for gid in gap_ids) if g]
@@ -993,6 +1271,8 @@ async def _step_research_dossier(store: Store, wf: WorkflowRun, step: WorkflowSt
         for c in store.list_benchmark_cases()
         if spec and c.case_id in spec.case_ids and c.confirmed_dois
     ]
+    pipeline = _pipeline_of(store, wf)
+    usage = LLMProvider(store).usage_summary()
     dossier = {
         "topic": wf.topic,
         "workflow_id": wf.workflow_id,
@@ -1025,6 +1305,12 @@ async def _step_research_dossier(store: Store, wf: WorkflowRun, step: WorkflowSt
                 "confidence_label": g.confidence_label,
                 "supporting_papers": len(g.supporting_papers),
                 "counter_evidence": len(g.counter_evidence),
+                "discovery_mode": g.discovery_mode,
+                "counter_status": g.counter_status,
+                "novelty_risk": g.novelty_risk,
+                "gate_status": g.gate.get("status", ""),
+                "validation_passed": g.validation.get("passed"),
+                "evidence_chain": _gap_evidence_chain(g, paper_by_id),
             }
             for g in gaps
         ],
@@ -1049,6 +1335,32 @@ async def _step_research_dossier(store: Store, wf: WorkflowRun, step: WorkflowSt
             "active_version_number": active.version_number if active else None,
             "total_versions": len(versions),
             "promotion_outcome": wf.context.get("promotion_outcome"),
+        },
+        "llm": {
+            "configured": usage.configured,
+            "status": usage.status,
+            "provider": usage.provider,
+            "model": usage.model,
+            "max_calls": usage.max_calls,
+            "calls_used": usage.calls_used,
+            "cache_hits": usage.cache_hits,
+            "role_usage": usage.role_usage,
+            "failed_calls": usage.failed_calls,
+            "total_tokens": usage.total_tokens,
+            "notice": usage.notice,
+            "gap_pipeline_id": pipeline.pipeline_id if pipeline else None,
+            "gap_pipeline_status": pipeline.status if pipeline else "NOT_RUN",
+            "stage_status": {s.stage_id: s.status for s in pipeline.stages} if pipeline else {},
+            "evidence_cards": (
+                sum(
+                    1
+                    for pid in pipeline.selected_paper_ids
+                    if store.get_evidence_card(pid, PROMPT_VERSION) is not None
+                )
+                if pipeline
+                else 0
+            ),
+            "audit_endpoint": "/api/llm/calls",
         },
         "acceptance_status": (
             "self_evolution_accepted"
@@ -1157,8 +1469,8 @@ async def advance(
         pending.finished_at = _now()
         wf.updated_at = _now()
         executed.append(pending.step_id)
-        if pending.status == "awaiting_human":
-            wf.status = "awaiting_human"
+        if pending.status in ("awaiting_human", "awaiting_budget"):
+            wf.status = pending.status  # type: ignore[assignment]
             store.save_workflow(wf)
             break
         store.save_workflow(wf)
